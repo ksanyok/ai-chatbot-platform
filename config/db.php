@@ -1,16 +1,28 @@
 <?php
 declare(strict_types=1);
 
+/*
+ * Database connection and schema management for the chatbot platform.
+ *
+ * This module exposes a single function `db()` that returns a PDO instance
+ * connected to the MySQL database defined via environment variables or
+ * sensible defaults. It also provides an `ensureTables()` helper that
+ * creates all required tables and adds missing columns for backwards
+ * compatibility. If the connection fails in a web context, the user is
+ * redirected to the installation wizard.
+ */
+
 $db = null;
 
 /**
  * Get a PDO database connection.
- * Uses environment variables for credentials with sensible defaults.
- * If a .env.php file exists in the project root, it will be loaded to
+ *
+ * Uses environment variables for credentials with sensible defaults. If
+ * a `.env.php` file exists in the project root, it will be loaded to
  * populate environment variables via putenv().
  *
- * If the connection fails in a web context, the user is redirected
- * to the installation wizard.
+ * When the connection fails while handling a web request, the user is
+ * redirected to `install.php` so they can configure the database.
  *
  * @return PDO
  */
@@ -28,10 +40,10 @@ function db(): PDO
     }
 
     // Database credentials from environment variables or defaults
-    $host    = getenv('DB_HOST') ?: 'localhost';
-    $name    = getenv('DB_NAME') ?: 'chatbot';
-    $user    = getenv('DB_USER') ?: 'dbuser';
-    $pass    = getenv('DB_PASS') ?: 'dbpassword';
+    $host = getenv('DB_HOST') ?: 'localhost';
+    $name = getenv('DB_NAME') ?: 'chatbot';
+    $user = getenv('DB_USER') ?: 'dbuser';
+    $pass = getenv('DB_PASS') ?: 'dbpassword';
     $charset = 'utf8mb4';
 
     $dsn = "mysql:host=$host;dbname=$name;charset=$charset";
@@ -53,13 +65,13 @@ function db(): PDO
 
     // Ensure tables and schema exist or are updated
     ensureTables($db);
-
     return $db;
 }
 
 /**
  * Ensure all required database tables and schema exist. Creates tables
- * if they do not exist and adds columns if missing.
+ * if they do not exist and adds columns if missing. Also attempts to
+ * upgrade older schemas to match current expectations.
  *
  * @param PDO $db
  */
@@ -96,7 +108,7 @@ function ensureTables(PDO $db): void
         id INT AUTO_INCREMENT PRIMARY KEY,
         site_id INT NOT NULL,
         url VARCHAR(255) NOT NULL,
-        content MEDIUMTEXT DEFAULT NULL,
+        content MEDIUMTEXT NOT NULL,
         title VARCHAR(255) DEFAULT NULL,
         h1 VARCHAR(255) DEFAULT NULL,
         description VARCHAR(512) DEFAULT NULL,
@@ -139,13 +151,20 @@ function ensureTables(PDO $db): void
     $db->exec("CREATE TABLE IF NOT EXISTS user_prefs (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
-        pref_key VARCHAR(255) NOT NULL,
-        pref_value TEXT,
+        pref VARCHAR(255) NOT NULL,
+        value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES bot_users(id),
-        UNIQUE KEY unique_pref (user_id, pref_key)
+        UNIQUE KEY uniq_user_pref (user_id, pref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Attempt to rename pref_key/pref_value columns from older schema
+    try {
+        $db->exec("ALTER TABLE user_prefs CHANGE pref_key pref VARCHAR(255) NOT NULL, CHANGE pref_value value VARCHAR(255) NOT NULL");
+    } catch (Throwable $e) {
+        // If columns do not exist or are already renamed, ignore
+    }
 
     // Add missing columns to pages table
     try {
@@ -161,9 +180,13 @@ function ensureTables(PDO $db): void
 
     // Add missing columns to trainings table
     try {
-        $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
-    } catch (Throwable $e) {}
-    try {
         $db->exec("ALTER TABLE trainings ADD COLUMN total_cost DECIMAL(12,4) DEFAULT 0");
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
 }
