@@ -15,11 +15,11 @@ $owner  = 'ksanyok';
 $repo   = 'ai-chatbot-platform';
 $branch = 'main';
 
-// Compose the GitHub API zipball URL for the specified branch. Using
-// api.github.com allows both public and private repositories to be
-// downloaded. When the repository is private, authentication headers
-// will be added below.
-$downloadUrl = "https://api.github.com/repos/$owner/$repo/zipball/$branch";
+// Compose the download URL for the specified branch. Since this
+// repository is public, we can use codeload.github.com to download the ZIP
+// archive without authentication. This endpoint returns a raw ZIP of the
+// repository.
+$downloadUrl = "https://codeload.github.com/$owner/$repo/zip/refs/heads/$branch";
 
 // Temporary paths for the downloaded ZIP archive and extraction directory
 $tempZip  = sys_get_temp_dir() . '/chatbot-install-' . uniqid() . '.zip';
@@ -34,18 +34,13 @@ if (!class_exists('ZipArchive')) {
 }
 
 try {
-    // Prepare cURL headers. Always send a User‑Agent as GitHub API
-    // requires it. Include Authorization header when a token is available.
-    $token   = getenv('GITHUB_TOKEN') ?: '';
+    // Prepare cURL headers. Always send a User-Agent; GitHub requires it.
+    // No Authorization header is needed because the repository is public.
     $headers = ['User-Agent: ai-chatbot-installer'];
-    if (!empty($token)) {
-        $headers[] = 'Authorization: token ' . $token;
-    }
 
     // Download the ZIP archive from GitHub. Use a cURL session so we can
-    // inspect the HTTP status code. If the request fails (e.g. because the
-    // repository is private and no token was provided), we throw a clear
-    // exception telling the user what to do.
+    // inspect the HTTP status code. Since the repository is public, we
+    // expect a 200 response without authentication.
     $fp = fopen($tempZip, 'w');
     $ch = curl_init($downloadUrl);
     curl_setopt($ch, CURLOPT_FILE, $fp);
