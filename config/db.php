@@ -93,9 +93,10 @@ function ensureTables(PDO $db): void
     // the actual token, timestamps for creation and update, and a foreign key linking back to the
     // corresponding row in `bot_users`.  A unique index on `(user_id, name)` prevents duplicate
     // entries for the same user and key name.
-    $db->exec("CREATE TABLE IF NOT EXISTS api_keys (
+        $db->exec("CREATE TABLE IF NOT EXISTS api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL,
+        -- user_id is optional. When null, the key applies globally rather than to a specific bot_user.
+        user_id INT DEFAULT NULL,
         name VARCHAR(255) NOT NULL,
         value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -133,6 +134,14 @@ function ensureTables(PDO $db): void
         $db->exec("ALTER TABLE api_keys ADD CONSTRAINT uniq_api_user_name UNIQUE (user_id, name)");
     } catch (Throwable $e) {
         // Constraint may already exist; ignore
+    }
+
+    // Ensure user_id column is nullable for backwards compatibility.
+    // Prior versions defined user_id as NOT NULL, which prevents inserting global keys.
+    try {
+        $db->exec("ALTER TABLE api_keys MODIFY user_id INT DEFAULT NULL");
+    } catch (Throwable $e) {
+        // Column may already be nullable or modification failed; ignore
     }
 
     // Create sites table
