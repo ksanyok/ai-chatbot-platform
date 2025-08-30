@@ -87,13 +87,53 @@ function ensureTables(PDO $db): void
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Create api_keys table
+    //
+    // The `api_keys` table stores tokens or API credentials for external services on a per‑user basis.
+    // Each record has a `name` identifying the type of key (e.g. 'telegram_bot_token'), a `value` storing
+    // the actual token, timestamps for creation and update, and a foreign key linking back to the
+    // corresponding row in `bot_users`.  A unique index on `(user_id, name)` prevents duplicate
+    // entries for the same user and key name.
     $db->exec("CREATE TABLE IF NOT EXISTS api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
-        api_key VARCHAR(255) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES bot_users(id)
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES bot_users(id),
+        UNIQUE KEY uniq_api_user_name (user_id, name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Migrate legacy api_keys schema
+    // Older versions of this application created an `api_keys` table with an `api_key` column and
+    // without `name`/`value` distinction.  The following statements attempt to bring the table up to
+    // date by adding the `name` column, renaming `api_key` to `value`, adding the `updated_at` column
+    // and the unique index.  Each statement is wrapped in a try/catch so that repeated executions
+    // (e.g. subsequent calls or when columns already exist) do not throw an error.
+    try {
+        // Add name column if it doesn't exist; default to 'telegram_bot_token' for legacy rows
+        $db->exec("ALTER TABLE api_keys ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT 'telegram_bot_token'");
+    } catch (Throwable $e) {
+        // Column may already exist; ignore
+    }
+    try {
+        // Rename api_key to value if the old column exists
+        $db->exec("ALTER TABLE api_keys CHANGE api_key value VARCHAR(255) NOT NULL");
+    } catch (Throwable $e) {
+        // Column may already be renamed or not exist; ignore
+    }
+    try {
+        // Add updated_at column for modification timestamps
+        $db->exec("ALTER TABLE api_keys ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+    } catch (Throwable $e) {
+        // Column may already exist; ignore
+    }
+    try {
+        // Add unique constraint on (user_id, name) if it doesn't exist
+        $db->exec("ALTER TABLE api_keys ADD CONSTRAINT uniq_api_user_name UNIQUE (user_id, name)");
+    } catch (Throwable $e) {
+        // Constraint may already exist; ignore
+    }
 
     // Create sites table
     $db->exec("CREATE TABLE IF NOT EXISTS sites (
