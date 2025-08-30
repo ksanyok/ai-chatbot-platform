@@ -1,4 +1,25 @@
 </main>
+<?php
+// Load current application version and check for updates
+// The version is defined in inc/version.php.  We also attempt to fetch
+// the remote version from the GitHub repository to detect if a newer
+// release is available.  If a newer version exists, a link will appear
+// in the footer inviting the administrator to run the update script.
+include_once __DIR__ . '/inc/version.php';
+$localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
+$latestVersion = $localVersion;
+$updateAvailable = false;
+try {
+    // Fetch remote version file from GitHub
+    $remoteContent = @file_get_contents('https://raw.githubusercontent.com/ksanyok/ai-chatbot-platform/main/inc/version.php');
+    if ($remoteContent && preg_match("/APP_VERSION\s*=\s*['\"]([\d\.]+)['\"]/i", $remoteContent, $m)) {
+        $latestVersion = $m[1];
+        $updateAvailable = version_compare($latestVersion, $localVersion, '>');
+    }
+} catch (Exception $e) {
+    // Fail silently if unable to fetch remote version
+}
+?>
 <footer id="app-footer" class="mt-12 relative overflow-hidden text-white/90">
   <!-- Background layer: soft gradient + subtle grid -->
   <div class="absolute inset-0 -z-10 bg-gradient-to-br from-indigo-900/40 via-purple-900/30 to-fuchsia-900/30"></div>
@@ -21,7 +42,15 @@
       <!-- Center: version + credits -->
       <div class="text-center md:text-left">
         <!-- Bump version when releasing new updates -->
-        <p class="text-sm opacity-80">v0.3 • Developed by <a href="https://BuyReadySite.com" class="underline decoration-emerald-400/50 hover:text-emerald-300" target="_blank" rel="noopener">BuyReadySite.com</a></p>
+        <p class="text-sm opacity-80">
+          v<?= htmlspecialchars($localVersion) ?> • Developed by
+          <a href="https://BuyReadySite.com" class="underline decoration-emerald-400/50 hover:text-emerald-300" target="_blank" rel="noopener">BuyReadySite.com</a>
+          <?php if ($updateAvailable): ?>
+            <span class="ml-2 text-xs text-emerald-300">
+              <a href="/update.php" class="underline decoration-emerald-400/50 hover:text-emerald-200" title="Новая версия доступна">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
+            </span>
+          <?php endif; ?>
+        </p>
         <p class="text-xs opacity-70"><?= htmlspecialchars(t('footer.updated')) ?> 28 июля 2025</p>
       </div>
 
