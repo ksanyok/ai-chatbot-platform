@@ -20,7 +20,8 @@
 
       <!-- Center: version + credits -->
       <div class="text-center md:text-left">
-        <p class="text-sm opacity-80">v0.2 • Developed by <a href="https://BuyReadySite.com" class="underline decoration-emerald-400/50 hover:text-emerald-300" target="_blank" rel="noopener">BuyReadySite.com</a></p>
+        <!-- Bump version when releasing new updates -->
+        <p class="text-sm opacity-80">v0.3 • Developed by <a href="https://BuyReadySite.com" class="underline decoration-emerald-400/50 hover:text-emerald-300" target="_blank" rel="noopener">BuyReadySite.com</a></p>
         <p class="text-xs opacity-70"><?= htmlspecialchars(t('footer.updated')) ?> 28 июля 2025</p>
       </div>
 
