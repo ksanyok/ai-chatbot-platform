@@ -6,20 +6,76 @@
 
 include_once __DIR__ . '/inc/version.php';
 
-function respond($message, $success = true) {
-    echo '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Обновление</title>';
-    echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css"></head><body class="p-8">';
+// Start session so we can access the user's preferred UI language (ui_lang)
+// and maintain authentication state. Without starting the session here the
+// update script would always fall back to the default language and require
+// re‑authentication on some hosts.
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Determine current UI language from session, defaulting to Russian.  The
+// installer and admin interface persist the selected language in
+// $_SESSION['ui_lang'], so reuse it here.  Supported values are 'en' and 'ru'.
+$lang = isset($_SESSION['ui_lang']) && in_array($_SESSION['ui_lang'], ['en','ru'], true)
+    ? $_SESSION['ui_lang']
+    : 'ru';
+
+// Simple translation dictionary for the updater.  We define labels for the two
+// supported languages.  If new languages are added in the future, extend
+// this array accordingly.
+$labels = [
+    'ru' => [
+        'title' => 'Обновление платформы',
+        'heading' => 'Обновление платформы',
+        'return' => 'Вернуться на главную',
+        'need_ext' => 'Необходимы PHP‑расширения cURL и ZipArchive для выполнения обновления.',
+        'download_fail' => 'Не удалось загрузить обновление с GitHub. HTTP код: ',
+        'extract_root_fail' => 'Не удалось определить корневую директорию в архиве.',
+        'zip_error' => 'Ошибка распаковки ZIP‑архива.',
+        'success' => 'Обновление успешно установлено.',
+    ],
+    'en' => [
+        'title' => 'Platform update',
+        'heading' => 'Platform update',
+        'return' => 'Return to home',
+        'need_ext' => 'PHP extensions cURL and ZipArchive are required to perform the update.',
+        'download_fail' => 'Failed to download update from GitHub. HTTP status: ',
+        'extract_root_fail' => 'Could not determine root directory in archive.',
+        'zip_error' => 'Error extracting ZIP archive.',
+        'success' => 'Update successfully installed.',
+    ],
+];
+
+// Helper function to send an HTML response and terminate execution.  It uses
+// translated labels defined above and respects the selected UI language.
+function respond_translated(array $labels, string $lang, string $message, bool $success = true): void {
+    $title   = htmlspecialchars($labels[$lang]['title']);
+    $heading = htmlspecialchars($labels[$lang]['heading']);
+    $return  = htmlspecialchars($labels[$lang]['return']);
+    $msg     = htmlspecialchars($message);
+    echo '<!DOCTYPE html><html lang="' . $lang . '"><head><meta charset="UTF-8">';
+    echo '<title>' . $title . '</title>';
+    echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css">';
+    echo '</head><body class="p-8">';
     echo '<div class="max-w-2xl mx-auto">';
-    echo '<h1 class="text-2xl font-bold mb-4">Обновление платформы</h1>';
-    echo '<div class="p-4 rounded ' . ($success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800') . '">' . htmlspecialchars($message) . '</div>';
-    echo '<a href="/" class="mt-4 inline-block text-emerald-600">Вернуться на главную</a>';
+    echo '<h1 class="text-2xl font-bold mb-4">' . $heading . '</h1>';
+    echo '<div class="p-4 rounded ' . ($success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800') . '">' . $msg . '</div>';
+    echo '<a href="/" class="mt-4 inline-block text-emerald-600">' . $return . '</a>';
     echo '</div></body></html>';
     exit;
 }
 
+// Legacy responder retained for backward compatibility.  Redirect all uses
+// to the new respond_translated() helper defined above.
+function respond($message, $success = true) {
+    global $labels, $lang;
+    respond_translated($labels, $lang, $message, $success);
+}
+
 // Only allow updates if curl and zip extensions are loaded
 if (!function_exists('curl_init') || !class_exists('ZipArchive')) {
-    respond('Необходимы PHP-расширения cURL и ZipArchive для выполнения обновления.', false);
+    respond_translated($labels, $lang, $labels[$lang]['need_ext'], false);
 }
 
 // URL to download the latest zip archive from GitHub main branch
@@ -38,8 +94,8 @@ $data = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 if ($httpCode !== 200 || !$data) {
-    respond('Не удалось загрузить обновление с GitHub. HTTP код: ' . $httpCode, false);
-}
+        respond_translated($labels, $lang, $labels[$lang]['download_fail'] . $httpCode, false);
+    }
 
 file_put_contents($tmpZip, $data);
 
@@ -61,9 +117,9 @@ if ($zip->open($tmpZip) === true) {
             break;
         }
     }
-    if (!isset($sourceDir)) {
-        respond('Не удалось определить корневую директорию в архиве.', false);
-    }
+        if (!isset($sourceDir)) {
+            respond_translated($labels, $lang, $labels[$lang]['extract_root_fail'], false);
+        }
     // Copy files to current directory except vendor and .env.php to preserve environment
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($sourceDir, RecursiveDirectoryIterator::SKIP_DOTS),
@@ -94,8 +150,8 @@ if ($zip->open($tmpZip) === true) {
         }
         rmdir($dir);
     }
-    rrmdir($extractedDir);
-    respond('Обновление успешно установлено.');
+        rrmdir($extractedDir);
+        respond_translated($labels, $lang, $labels[$lang]['success']);
 } else {
-    respond('Ошибка распаковки ZIP-архива.', false);
+        respond_translated($labels, $lang, $labels[$lang]['zip_error'], false);
 }
