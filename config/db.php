@@ -170,10 +170,35 @@ function ensureTables(PDO $db): void
         cost DECIMAL(12,4) DEFAULT 0,
         total_cost DECIMAL(12,4) DEFAULT 0,
         processed_pages INT DEFAULT 0,
+        total_pages INT DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (site_id) REFERENCES sites(id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Migrate legacy trainings schema
+    // Older versions lacked `processed_pages`, `total_pages`, `total_cost` and `status` columns. Attempt to add them if missing.
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN total_pages INT DEFAULT 0");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN total_cost DECIMAL(12,4) DEFAULT 0");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
 
     // Create history table
     $db->exec("CREATE TABLE IF NOT EXISTS history (
