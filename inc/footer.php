@@ -5,7 +5,9 @@
 // the remote version from the GitHub repository to detect if a newer
 // release is available.  If a newer version exists, a link will appear
 // in the footer inviting the administrator to run the update script.
-include_once __DIR__ . '/inc/version.php';
+// Correct path: version.php lives in the same directory as this footer file.
+// Use __DIR__ to reference this directory instead of prepending another `inc`.
+include_once __DIR__ . '/version.php';
 $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
 $latestVersion = $localVersion;
 $updateAvailable = false;
