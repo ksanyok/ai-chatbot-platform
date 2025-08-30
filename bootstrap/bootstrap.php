@@ -88,8 +88,15 @@ try {
     }
     $extractedRoot = $entries[0];
 
-    // Copy extracted files to the parent directory of this script
-    $targetRoot = dirname(__DIR__);
+    // Determine where to copy the extracted files. If this script is
+    // located inside a "bootstrap" directory, copy to its parent directory;
+    // otherwise copy into the current directory. This makes it safe to
+    // upload the bootstrap installer either inside a "bootstrap" folder or
+    // directly in the web root.
+    $targetRoot = __DIR__;
+    if (basename(__DIR__) === 'bootstrap') {
+        $targetRoot = dirname(__DIR__);
+    }
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($extractedRoot, FilesystemIterator::SKIP_DOTS),
         RecursiveIteratorIterator::SELF_FIRST
@@ -120,10 +127,16 @@ try {
     }
     rmdir($tempDir);
 
-    // Redirect to the main installer (install.php) if running in a web context
-    $installPath = dirname(__DIR__) . '/install.php';
+    // Redirect to the main installer (install.php) if running in a web context.
+    // Compute the absolute path to install.php based on where files were copied.
+    $installPath = $targetRoot . '/install.php';
     if (php_sapi_name() !== 'cli' && is_file($installPath)) {
-        header('Location: ../install.php');
+        // Determine the correct relative URL for redirection. If the bootstrap
+        // script sits inside a "bootstrap" subdirectory, go up one level to
+        // reach install.php. Otherwise redirect to install.php in the same
+        // directory.
+        $redirectPath = (basename(__DIR__) === 'bootstrap') ? '../install.php' : 'install.php';
+        header('Location: ' . $redirectPath);
         exit;
     }
 
