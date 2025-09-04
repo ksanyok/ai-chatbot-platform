@@ -8,9 +8,6 @@ while ($autoloadDir !== dirname($autoloadDir)) {
     }
     $autoloadDir = dirname($autoloadDir);
 }
-if (!class_exists(\Dotenv\Dotenv::class) && !class_exists(\voku\helper\HtmlDomParser::class)) {
-    die('Dependencies not found. Please run composer install in your project.');
-}
 ob_start(); // Начинаем буферизацию вывода
 @ini_set('display_errors','0');
 @ini_set('html_errors','0');
@@ -23,28 +20,56 @@ use voku\helper\HtmlDomParser;
 if (!function_exists('t')) { function t($k){ return $k; } }
 
 /* ---------- ENV & LOG PRELUDE (moved up) ---------- */
-if (file_exists(__DIR__ . '/../.env')) {
-    Dotenv::createImmutable(__DIR__ . '/../')->safeLoad();
-}
-
-$logFile = __DIR__ . '/../ingest.log';
-
-// JSON output directory and files
+// Ensure data directory exists and use it for logs by default
 $dataDir = __DIR__ . '/../data';
 if (!file_exists($dataDir)) {
-    mkdir($dataDir, 0755, true);
+    @mkdir($dataDir, 0755, true);
 }
 $progressFile = $dataDir . '/progress.json';
 $outputFile   = $dataDir . '/embeddings.json';
 $indexFile    = $dataDir . '/index.json';
 
-/* tiny helper */
+// Log file inside data/ where we created the dir above
+$logFile = $dataDir . '/ingest.log';
+
+// Dependency availability flag — do not fatal() if composer deps missing
+$deps_ok = true;
+if (!class_exists('\Dotenv\Dotenv') || !class_exists('\voku\helper\HtmlDomParser')) {
+    $deps_ok = false;
+    // Write a note to PHP error log so admins can see it even if file writes fail
+    error_log('[ingest] Missing optional dependencies: dotenv or HtmlDomParser. Some features will be degraded.');
+}
+
 function logMsg($msg)
 {
-    global $logFile;
-    if (empty($logFile)) { $logFile = __DIR__ . '/../ingest.log'; }
-    @file_put_contents($logFile, '[' . date('c') . '] ' . $msg . PHP_EOL, FILE_APPEND);
+    global $logFile, $dataDir;
+    $ts = '[' . date('c') . '] ' . $msg . PHP_EOL;
+    if (!empty($logFile)) {
+        $ok = @file_put_contents($logFile, $ts, FILE_APPEND);
+        if ($ok === false) {
+            // fallback to central project error log
+            @file_put_contents(__DIR__ . '/../error.log', $ts, FILE_APPEND);
+            // and to PHP system logger
+            error_log($msg);
+        }
+    } else {
+        @file_put_contents(__DIR__ . '/../error.log', $ts, FILE_APPEND);
+        error_log($msg);
+    }
 }
+
+if ($deps_ok && file_exists(__DIR__ . '/../.env')) {
+    try {
+        Dotenv::createImmutable(__DIR__ . '/../')->safeLoad();
+    } catch (Throwable $e) {
+        logMsg('Dotenv load failed: ' . $e->getMessage());
+    }
+} else if (!$deps_ok) {
+    // If dependencies are missing and this script is embedded into admin UI,
+    // we will continue but show a soft warning in the UI where appropriate.
+    logMsg('Optional dependencies not available — running in degraded mode.');
+}
+
 logMsg('=== ingest.php loaded, PHP ' . PHP_VERSION . ' ===');
 // Log SAPI and arguments for debugging
 $sapi = php_sapi_name();
@@ -836,7 +861,7 @@ if (isset($_POST['start_ingest'], $_POST['pages'], $_POST['exclusions'])) {
         foreach ($excl as $ex) {
             if ($ex === '') continue;
             if ($ex[0] === '*' && substr($ex, -1) === '*') {
-                $p = '/' . str_replace('\*', '.*', preg_quote($ex, '/')) . '/';
+                $p = '/' . str_replace('\\*', '.*', preg_quote($ex, '/')) . '/';
                 if (preg_match($p, $u)) { $skip = true; break; }
             } elseif (strpos($u, $ex) !== false) {
                 $skip = true; break;

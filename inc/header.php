@@ -1,16 +1,26 @@
 <?php require_once __DIR__.'/auth.php'; ?>
 <?php
 // --- UI language: persist per authorized user and load on each request ---
-$dbh = function_exists('db') ? db() : null;
+// Attempt to get DB handle but avoid throwing a fatal error if connection fails
+try {
+    $dbh = function_exists('db') ? db() : null;
+} catch (Throwable $e) {
+    // DB not available; continue in session-only mode
+    $dbh = null;
+}
 if ($dbh) {
-    // Create user_prefs table if not exists
-    $dbh->exec("CREATE TABLE IF NOT EXISTS user_prefs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        pref VARCHAR(64) NOT NULL,
-        value VARCHAR(255) NOT NULL,
-        UNIQUE KEY uniq_user_pref (user_id, pref)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+    // Create user_prefs table if not exists — wrap in try/catch to avoid breaking the UI
+    try {
+        $dbh->exec("CREATE TABLE IF NOT EXISTS user_prefs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            pref VARCHAR(64) NOT NULL,
+            value VARCHAR(255) NOT NULL,
+            UNIQUE KEY uniq_user_pref (user_id, pref)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+    } catch (Throwable $e) {
+        // ignore schema creation errors here
+    }
 }
 
 // Handle language switch (POST)
@@ -18,8 +28,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
     $lang = in_array($_POST['ui_lang'], ['en','ru'], true) ? $_POST['ui_lang'] : 'en';
     $_SESSION['ui_lang'] = $lang;
     if ($dbh && !empty($_SESSION['user_id'])) {
-        $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-        $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+        try {
+            $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
+            $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+        } catch (Throwable $e) {
+            // Don't break the request on DB write failure; log for debugging
+            @file_put_contents(__DIR__ . '/../error.log', '[' . date('c') . '] Language save failed: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
+        }
     }
     // PRG pattern to avoid resubmission
     header('Location: ' . strtok($_SERVER['REQUEST_URI'],'?') . (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']!=='' ? ('?'.$_SERVER['QUERY_STRING']) : ''));
