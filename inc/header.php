@@ -16,13 +16,21 @@ if ($dbh) {
 // Handle language switch (POST)
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
     $lang = in_array($_POST['ui_lang'], ['en','ru'], true) ? $_POST['ui_lang'] : 'en';
+    // persist to session first so UI updates immediately
     $_SESSION['ui_lang'] = $lang;
+    // persist per-user preference if DB available and user logged in
     if ($dbh && !empty($_SESSION['user_id'])) {
-        $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-        $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+        try {
+            $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
+            $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+        } catch (Throwable $e) {
+            // Не фатальная ошибка — логируем в файл и продолжаем (чтобы не давать 500 при проблемах с БД)
+            @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] Language save error: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
+        }
     }
-    // PRG pattern to avoid resubmission
-    header('Location: ' . strtok($_SERVER['REQUEST_URI'],'?') . (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']!=='' ? ('?'.$_SERVER['QUERY_STRING']) : ''));
+    // PRG pattern to avoid resubmission — редиректим на ту же страницу без POST
+    $redirectTo = strtok($_SERVER['REQUEST_URI'],'?') ?: '/';
+    header('Location: ' . $redirectTo . (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']!=='' ? ('?'.$_SERVER['QUERY_STRING']) : ''));
     exit;
 }
 
