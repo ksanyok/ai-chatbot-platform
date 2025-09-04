@@ -41,6 +41,18 @@ $cost = isset($running['cost']) ? $running['cost'] : 0;
         }
     }
 
+    // Additional fallback: build a URL relative to the current script location.
+    // This helps when the app is served from a subdirectory and DOCUMENT_ROOT
+    // is not set or doesn't match the repository layout (common in some hosts).
+    if (!$iframeSrc) {
+        $scriptName = $_SERVER['SCRIPT_NAME'] ?? '/';
+        $baseDir = rtrim(dirname($scriptName), '/\\');
+        if ($baseDir === '.' || $baseDir === '/') { $baseDir = ''; }
+        $candidate = $baseDir . '/scripts/ingest.php';
+        // Assign candidate URL (do not perform network request here).
+        $iframeSrc = $candidate;
+    }
+
     if ($iframeSrc) {
         echo '<div style="width:100%; height:820px; border:1px solid rgba(255,255,255,0.06); border-radius:8px; overflow:hidden">';
         echo '<iframe src="' . htmlspecialchars($iframeSrc) . '" style="width:100%; height:100%; border:0;" title="Ingest UI"></iframe>';

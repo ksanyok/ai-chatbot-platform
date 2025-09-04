@@ -515,6 +515,35 @@ function t(string $key): string {
         body { display: flex; flex-direction: column; min-height: 100vh; }
         main { padding-top: 4rem; flex: 1; }
         footer { flex-shrink: 0; }
+
+        /* --- Minimal fallback base styles (always present) to keep layout readable
+           These are intentionally small and conservative so Tailwind, if present,
+           will mostly override them. They help when the CDN is blocked or offline. */
+        :root {
+          --bg:#0f1724;
+          --panel:#0b1220;
+          --muted:#94a3b8;
+          --text:#e6eef8;
+          --accent:#60a5fa;
+        }
+        html,body { background:var(--bg); color:var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+        .container{max-width:1100px;margin:0 auto;padding:0 1rem;}
+        header{background:rgba(2,6,23,0.6);border-bottom:1px solid rgba(255,255,255,0.03);}
+        .flex{display:flex}
+        .items-center{align-items:center}
+        .justify-between{justify-content:space-between}
+        .gap-3{gap:0.75rem}
+        .rounded-xl{border-radius:12px}
+        .rounded-lg{border-radius:8px}
+        .hidden{display:none!important}
+        .inline-flex{display:inline-flex}
+        .px-3{padding-left:0.75rem;padding-right:0.75rem}
+        .py-2{padding-top:0.5rem;padding-bottom:0.5rem}
+        a { color: var(--muted); text-decoration: none; }
+        a:hover { color: var(--accent); }
+        button { background: transparent; border: none; color: inherit; font: inherit; cursor: pointer; }
+        /* simple responsive fix for mobile menu area */
+        #mobileMenu { background: rgba(3,7,18,0.9); }
     </style>
     <meta charset="utf-8">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -595,6 +624,8 @@ function t(string $key): string {
     </div>
   </div>
 </header>
+
+<!-- If Tailwind fails to load, inject a small fallback stylesheet to keep UI readable -->
 <script>
   (function(){
     const header = document.getElementById('appHeader');
@@ -616,6 +647,34 @@ function t(string $key): string {
       burger.setAttribute('aria-expanded', (!open).toString());
       this.innerHTML = open ? '<i class="fas fa-bars"></i>' : '<i class="fas fa-times"></i>';
     });
+
+    // Tailwind availability check: if tailwind not present after short timeout, apply fallback CSS
+    setTimeout(function(){
+      if(typeof window.tailwind === 'undefined'){
+        console.warn('Tailwind CDN not available — applying fallback styles');
+        if(!document.getElementById('fallbackTailwind')){
+          var css = `
+            /* dynamic fallback to support layout when CDN blocked */
+            .container{max-width:1100px;margin:0 auto;padding:0 1rem;}
+            .mx-auto{margin-left:auto;margin-right:auto}
+            .py-3{padding-top:.75rem;padding-bottom:.75rem}
+            .py-6{padding-top:1.5rem;padding-bottom:1.5rem}
+            .mt-16{margin-top:4rem}
+            .text-gray-100{color:#e6eef8}
+            .bg-white\\/5{background:rgba(255,255,255,0.05)}
+            .hover\\:bg-white\\/5:hover{background:rgba(255,255,255,0.05)}
+            .rounded-lg{border-radius:8px}
+            .rounded-xl{border-radius:12px}
+            .hidden{display:none!important}
+            .flex{display:flex}
+            .grid{display:grid}
+            .place-items-center{place-items:center}
+            a{color:#9aa5ff;text-decoration:none}
+          `;
+          var s=document.createElement('style'); s.id='fallbackTailwind'; s.appendChild(document.createTextNode(css)); document.head.appendChild(s);
+        }
+      }
+    }, 1200);
   })();
 </script>
 <main class="flex-grow container mx-auto py-6 mt-16">
