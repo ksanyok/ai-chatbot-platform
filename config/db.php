@@ -33,31 +33,9 @@ function db(): PDO
         return $db;
     }
 
-    // Load environment variables from .env if present (preferred) or legacy .env.php
-    $rootDir = __DIR__ . '/..';
+    // Load environment variables from .env.php if present
     $envFile = __DIR__ . '/../.env.php';
-    if (file_exists($rootDir . '/.env')) {
-        // Try using vlucas/phpdotenv if available
-        if (class_exists('\Dotenv\Dotenv')) {
-            try {
-                \Dotenv\Dotenv::createImmutable($rootDir)->safeLoad();
-            } catch (Throwable $e) {
-                // ignore and continue — environment may already be set
-            }
-        } else {
-            // Fallback: parse simple KEY=VALUE lines
-            $lines = @file($rootDir . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if ($lines !== false) {
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if ($line === '' || strpos($line, '#') === 0) continue;
-                    if (strpos($line, '=') === false) continue;
-                    [$k, $v] = array_map('trim', explode('=', $line, 2));
-                    if ($k !== '') putenv("$k=$v");
-                }
-            }
-        }
-    } elseif (file_exists($envFile)) {
+    if (file_exists($envFile)) {
         require_once $envFile;
     }
 
@@ -77,12 +55,7 @@ function db(): PDO
     try {
         $db = new PDO($dsn, $user, $pass, $options);
     } catch (Throwable $e) {
-        // If explicit env flag requests redirect to install, do so. Otherwise throw to let caller handle it.
-        $redirect = getenv('REDIRECT_TO_INSTALL') ?: getenv('DB_REDIRECT_TO_INSTALL') ?: false;
-        if (!$redirect) {
-            // In web context, rethrow so the front controller can show a sensible error instead of an installer.
-            throw $e;
-        }
+        // Redirect to install wizard if DB connection fails in a web context
         if (php_sapi_name() !== 'cli') {
             header('Location: /install.php');
             exit;
@@ -191,9 +164,6 @@ function ensureTables(PDO $db): void
         keywords VARCHAR(512) DEFAULT NULL,
         embed_tokens INT DEFAULT NULL,
         embed_cost DECIMAL(12,4) DEFAULT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'new',
-        last_modified DATETIME DEFAULT NULL,
-        last_trained_at DATETIME DEFAULT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (site_id) REFERENCES sites(id),
@@ -211,14 +181,13 @@ function ensureTables(PDO $db): void
         processed_pages INT DEFAULT 0,
         total_pages INT DEFAULT 0,
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
-        finished_at DATETIME DEFAULT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (site_id) REFERENCES sites(id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Migrate legacy trainings schema
-    // Older versions lacked `processed_pages`, `total_pages`, `total_cost`, `status` and `finished_at` columns. Attempt to add them if missing.
+    // Older versions lacked `processed_pages`, `total_pages`, `total_cost` and `status` columns. Attempt to add them if missing.
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
     } catch (Throwable $e) {
@@ -239,11 +208,6 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
-    try {
-        $db->exec("ALTER TABLE trainings ADD COLUMN finished_at DATETIME DEFAULT NULL");
-    } catch (Throwable $e) {
-        // Column may already exist
-    }
 
     // Create history table
     $db->exec("CREATE TABLE IF NOT EXISTS history (
@@ -258,43 +222,22 @@ function ensureTables(PDO $db): void
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Create user_prefs table
-    // Make user_id nullable to avoid FK failures on misaligned/legacy user ids.
     $db->exec("CREATE TABLE IF NOT EXISTS user_prefs (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT DEFAULT NULL,
+        user_id INT NOT NULL,
         pref VARCHAR(255) NOT NULL,
         value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES bot_users(id),
         UNIQUE KEY uniq_user_pref (user_id, pref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-
-    // Ensure the foreign key references bot_users with ON DELETE SET NULL to make user_id optional
-    try {
-        // Drop existing FK if it exists (constraint names may differ across installs)
-        $db->exec("ALTER TABLE user_prefs DROP FOREIGN KEY user_prefs_ibfk_1");
-    } catch (Throwable $e) {
-        // ignore if FK name doesn't exist
-    }
-    try {
-        // Add a safe FK that sets user_id to NULL when the referenced user is removed
-        $db->exec("ALTER TABLE user_prefs ADD CONSTRAINT user_prefs_ibfk_1 FOREIGN KEY (user_id) REFERENCES bot_users(id) ON DELETE SET NULL ON UPDATE CASCADE");
-    } catch (Throwable $e) {
-        // ignore errors (may already exist or bot_users missing during initial install)
-    }
 
     // Attempt to rename pref_key/pref_value columns from older schema
     try {
         $db->exec("ALTER TABLE user_prefs CHANGE pref_key pref VARCHAR(255) NOT NULL, CHANGE pref_value value VARCHAR(255) NOT NULL");
     } catch (Throwable $e) {
         // If columns do not exist or are already renamed, ignore
-    }
-
-    // In case older schema used NOT NULL for user_id, make it nullable for compatibility
-    try {
-        $db->exec("ALTER TABLE user_prefs MODIFY user_id INT DEFAULT NULL");
-    } catch (Throwable $e) {
-        // ignore
     }
 
     // Add missing columns to pages table
@@ -308,22 +251,7 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
-    try {
-        $db->exec("ALTER TABLE pages ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'new'");
-    } catch (Throwable $e) {
-        // Column may already exist
-    }
-    try {
-        $db->exec("ALTER TABLE pages ADD COLUMN last_modified DATETIME DEFAULT NULL");
-    } catch (Throwable $e) {
-        // Column may already exist
-    }
-    try {
-        $db->exec("ALTER TABLE pages ADD COLUMN last_trained_at DATETIME DEFAULT NULL");
-    } catch (Throwable $e) {
-        // Column may already exist
-    }
-    
+
     // Add missing columns to trainings table
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN total_cost DECIMAL(12,4) DEFAULT 0");
@@ -332,11 +260,6 @@ function ensureTables(PDO $db): void
     }
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
-    } catch (Throwable $e) {
-        // Column may already exist
-    }
-    try {
-        $db->exec("ALTER TABLE trainings ADD COLUMN finished_at DATETIME DEFAULT NULL");
     } catch (Throwable $e) {
         // Column may already exist
     }
