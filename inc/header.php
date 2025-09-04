@@ -13,9 +13,11 @@ if ($dbh) {
     try {
         $dbh->exec("CREATE TABLE IF NOT EXISTS user_prefs (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            pref VARCHAR(64) NOT NULL,
+            user_id INT DEFAULT NULL,
+            pref VARCHAR(255) NOT NULL,
             value VARCHAR(255) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uniq_user_pref (user_id, pref)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
     } catch (Throwable $e) {

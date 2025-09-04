@@ -1045,9 +1045,12 @@ if (isset($_GET['retrain'])) {
 if (isset($_GET['retrain_site'])) {
     $siteId = (int)$_GET['retrain_site'];
     $pdo = db();
+    // Пометить все страницы сайта как pending
     $pdo->prepare("UPDATE pages SET status='pending' WHERE site_id=?")->execute([$siteId]);
-    // Create new training for this site
-    $count = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?")->execute([$siteId]) ? $pdo->query("SELECT COUNT(*)")->fetchColumn() : 0;
+    // Создать новую запись обучения: корректно посчитать количество страниц для этого сайта
+    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?");
+    $cntStmt->execute([$siteId]);
+    $count = (int) $cntStmt->fetchColumn();
     $pdo->prepare("INSERT INTO trainings (site_id, total_pages, status) VALUES (?, ?, 'running')")
         ->execute([$siteId, $count]);
     header("Location: ?stats=1");

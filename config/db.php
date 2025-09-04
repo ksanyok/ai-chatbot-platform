@@ -164,6 +164,9 @@ function ensureTables(PDO $db): void
         keywords VARCHAR(512) DEFAULT NULL,
         embed_tokens INT DEFAULT NULL,
         embed_cost DECIMAL(12,4) DEFAULT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'new',
+        last_modified DATETIME DEFAULT NULL,
+        last_trained_at DATETIME DEFAULT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (site_id) REFERENCES sites(id),
@@ -181,13 +184,14 @@ function ensureTables(PDO $db): void
         processed_pages INT DEFAULT 0,
         total_pages INT DEFAULT 0,
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        finished_at DATETIME DEFAULT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (site_id) REFERENCES sites(id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Migrate legacy trainings schema
-    // Older versions lacked `processed_pages`, `total_pages`, `total_cost` and `status` columns. Attempt to add them if missing.
+    // Older versions lacked `processed_pages`, `total_pages`, `total_cost`, `status` and `finished_at` columns. Attempt to add them if missing.
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
     } catch (Throwable $e) {
@@ -208,6 +212,11 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN finished_at DATETIME DEFAULT NULL");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
 
     // Create history table
     $db->exec("CREATE TABLE IF NOT EXISTS history (
@@ -222,9 +231,10 @@ function ensureTables(PDO $db): void
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Create user_prefs table
+    // Make user_id nullable to avoid FK failures on misaligned/legacy user ids.
     $db->exec("CREATE TABLE IF NOT EXISTS user_prefs (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL,
+        user_id INT DEFAULT NULL,
         pref VARCHAR(255) NOT NULL,
         value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -240,6 +250,13 @@ function ensureTables(PDO $db): void
         // If columns do not exist or are already renamed, ignore
     }
 
+    // In case older schema used NOT NULL for user_id, make it nullable for compatibility
+    try {
+        $db->exec("ALTER TABLE user_prefs MODIFY user_id INT DEFAULT NULL");
+    } catch (Throwable $e) {
+        // ignore
+    }
+
     // Add missing columns to pages table
     try {
         $db->exec("ALTER TABLE pages ADD COLUMN embed_tokens INT DEFAULT NULL");
@@ -251,7 +268,22 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
-
+    try {
+        $db->exec("ALTER TABLE pages ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'new'");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE pages ADD COLUMN last_modified DATETIME DEFAULT NULL");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE pages ADD COLUMN last_trained_at DATETIME DEFAULT NULL");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    
     // Add missing columns to trainings table
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN total_cost DECIMAL(12,4) DEFAULT 0");
@@ -260,6 +292,11 @@ function ensureTables(PDO $db): void
     }
     try {
         $db->exec("ALTER TABLE trainings ADD COLUMN processed_pages INT DEFAULT 0");
+    } catch (Throwable $e) {
+        // Column may already exist
+    }
+    try {
+        $db->exec("ALTER TABLE trainings ADD COLUMN finished_at DATETIME DEFAULT NULL");
     } catch (Throwable $e) {
         // Column may already exist
     }
