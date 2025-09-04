@@ -229,7 +229,6 @@ function ensureTables(PDO $db): void
         value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES bot_users(id),
         UNIQUE KEY uniq_user_pref (user_id, pref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
