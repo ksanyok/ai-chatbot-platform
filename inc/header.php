@@ -1,25 +1,71 @@
 <?php require_once __DIR__.'/auth.php'; ?>
 <?php
 // --- UI language: persist per authorized user and load on each request ---
-$dbh = function_exists('db') ? db() : null;
+// Attempt to get DB handle but avoid throwing a fatal error if connection fails
+try {
+    $dbh = function_exists('db') ? db() : null;
+} catch (Throwable $e) {
+    // DB not available; continue in session-only mode
+    $dbh = null;
+}
 if ($dbh) {
-    // Create user_prefs table if not exists
-    $dbh->exec("CREATE TABLE IF NOT EXISTS user_prefs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        pref VARCHAR(64) NOT NULL,
-        value VARCHAR(255) NOT NULL,
-        UNIQUE KEY uniq_user_pref (user_id, pref)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+    // Create user_prefs table if not exists — wrap in try/catch to avoid breaking the UI
+    try {
+        $dbh->exec("CREATE TABLE IF NOT EXISTS user_prefs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT DEFAULT NULL,
+            pref VARCHAR(255) NOT NULL,
+            value VARCHAR(255) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_user_pref (user_id, pref)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+    } catch (Throwable $e) {
+        // ignore schema creation errors here
+    }
 }
 
 // Handle language switch (POST)
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
     $lang = in_array($_POST['ui_lang'], ['en','ru'], true) ? $_POST['ui_lang'] : 'en';
     $_SESSION['ui_lang'] = $lang;
-    if ($dbh && !empty($_SESSION['user_id'])) {
-        $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-        $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+    if ($dbh) {
+        // Determine if session user is present and exists in bot_users
+        $userId = null;
+        if (!empty($_SESSION['user_id'])) {
+            try {
+                $check = $dbh->prepare("SELECT id FROM bot_users WHERE id=? LIMIT 1");
+                $check->execute([(int)$_SESSION['user_id']]);
+                $found = $check->fetchColumn();
+                if ($found) $userId = (int)$found;
+            } catch (Throwable $e) {
+                // ignore — we'll fall back to global pref
+            }
+        }
+
+        try {
+            if ($userId === null) {
+                // Save as a global preference (user_id IS NULL).
+                // Use select+update to avoid creating duplicate NULL-key rows.
+                $sel = $dbh->prepare("SELECT id FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+                $sel->execute();
+                $existing = $sel->fetchColumn();
+                if ($existing) {
+                    $up = $dbh->prepare("UPDATE user_prefs SET value=?, updated_at=NOW() WHERE id=?");
+                    $up->execute([$lang, $existing]);
+                } else {
+                    $ins = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (NULL, 'ui_lang', ?)");
+                    $ins->execute([$lang]);
+                }
+            } else {
+                // Save user-specific preference, after verifying user exists
+                $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value), updated_at=NOW()");
+                $stmt->execute([$userId, $lang]);
+            }
+        } catch (Throwable $e) {
+            // Log but do not break the request
+            @file_put_contents(__DIR__ . '/../error.log', '[' . date('c') . '] Language save failed: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
+        }
     }
     // PRG pattern to avoid resubmission
     header('Location: ' . strtok($_SERVER['REQUEST_URI'],'?') . (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']!=='' ? ('?'.$_SERVER['QUERY_STRING']) : ''));
@@ -28,13 +74,49 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
 
 // Determine current UI language
 $ui_lang = 'en';
-if ($dbh && !empty($_SESSION['user_id'])) {
-    $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang'");
-    $stmt->execute([(int)$_SESSION['user_id']]);
-    $val = $stmt->fetchColumn();
-    if (is_string($val) && $val !== '') { $ui_lang = $val; }
-} elseif (!empty($_SESSION['ui_lang'])) {
-    $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en';
+if ($dbh) {
+    $userId = null;
+    if (!empty($_SESSION['user_id'])) {
+        try {
+            $check = $dbh->prepare("SELECT id FROM bot_users WHERE id=? LIMIT 1");
+            $check->execute([(int)$_SESSION['user_id']]);
+            $found = $check->fetchColumn();
+            if ($found) $userId = (int)$found;
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+    // Prefer user-specific preference if available
+    if ($userId !== null) {
+        try {
+            $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang' LIMIT 1");
+            $stmt->execute([$userId]);
+            $val = $stmt->fetchColumn();
+            if (is_string($val) && $val !== '') { $ui_lang = $val; }
+            else {
+                // fallback to global pref
+                $stmt2 = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+                $stmt2->execute();
+                $gval = $stmt2->fetchColumn();
+                if (is_string($gval) && $gval !== '') { $ui_lang = $gval; }
+            }
+        } catch (Throwable $e) {
+            // ignore and fall back to session or default
+        }
+    } else {
+        // No valid user: try global pref, then session
+        try {
+            $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+            $stmt->execute();
+            $gval = $stmt->fetchColumn();
+            if (is_string($gval) && $gval !== '') { $ui_lang = $gval; }
+            elseif (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
+        } catch (Throwable $e) {
+            if (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
+        }
+    }
+} else {
+    if (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
 }
 
 // Translations
@@ -433,6 +515,47 @@ function t(string $key): string {
         body { display: flex; flex-direction: column; min-height: 100vh; }
         main { padding-top: 4rem; flex: 1; }
         footer { flex-shrink: 0; }
+
+        /* --- Minimal fallback base styles (always present) to keep layout readable
+           These are intentionally small and conservative so Tailwind, if present,
+           will mostly override them. They help when the CDN is blocked or offline. */
+        :root {
+          --bg:#0f1724;
+          --panel:#0b1220;
+          --muted:#94a3b8;
+          --text:#e6eef8;
+          --accent:#60a5fa;
+        }
+        html,body { background:var(--bg); color:var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+        .container{max-width:1100px;margin:0 auto;padding:0 1rem;}
+        header{background:rgba(2,6,23,0.6);border-bottom:1px solid rgba(255,255,255,0.03);}
+        .flex{display:flex}
+        .items-center{align-items:center}
+        .justify-between{justify-content:space-between}
+        .gap-3{gap:0.75rem}
+        .rounded-xl{border-radius:12px}
+        .rounded-lg{border-radius:8px}
+        .hidden{display:none!important}
+        .inline-flex{display:inline-flex}
+        .px-3{padding-left:0.75rem;padding-right:0.75rem}
+        .py-2{padding-top:0.5rem;padding-bottom:0.5rem}
+        a { color: var(--muted); text-decoration: none; }
+        a:hover { color: var(--accent); }
+        button { background: transparent; border: none; color: inherit; font: inherit; cursor: pointer; }
+        /* simple responsive fix for mobile menu area */
+        #mobileMenu { background: rgba(3,7,18,0.9); }
+
+        /* Fallback layout rules to emulate Tailwind's md: breakpoint behavior
+           Ensure desktop navigation is visible when Tailwind is unavailable. */
+        .desktop-nav { display: flex; }
+        /* hide desktop-nav on small screens */
+        @media (max-width: 768px) {
+            .desktop-nav { display: none !important; }
+            /* show mobile menu area on small screens only */
+            #mobileMenu { display: block !important; }
+        }
+        /* default: hide mobile menu in non-tailwind environments */
+        @media (min-width: 769px) { #mobileMenu { display: none !important; } }
     </style>
     <meta charset="utf-8">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -454,7 +577,7 @@ function t(string $key): string {
     </div>
 
     <!-- Desktop nav -->
-    <nav class="hidden md:flex items-center gap-2">
+    <nav class="hidden md:flex items-center gap-2 desktop-nav">
       <a href="/admin/dashboard.php" class="px-3 py-2 rounded-lg transition <?= $current==='dashboard.php'?'bg-white/10 text-indigo-300 ring-1 ring-white/10':'hover:bg-white/5' ?>">
         <i class="fas fa-tachometer-alt"></i> <span class="ml-1 hidden lg:inline"><?= htmlspecialchars(t('nav.dashboard')) ?></span>
       </a>
@@ -513,6 +636,8 @@ function t(string $key): string {
     </div>
   </div>
 </header>
+
+<!-- If Tailwind fails to load, inject a small fallback stylesheet to keep UI readable -->
 <script>
   (function(){
     const header = document.getElementById('appHeader');
@@ -534,6 +659,34 @@ function t(string $key): string {
       burger.setAttribute('aria-expanded', (!open).toString());
       this.innerHTML = open ? '<i class="fas fa-bars"></i>' : '<i class="fas fa-times"></i>';
     });
+
+    // Tailwind availability check: if tailwind not present after short timeout, apply fallback CSS
+    setTimeout(function(){
+      if(typeof window.tailwind === 'undefined'){
+        console.warn('Tailwind CDN not available — applying fallback styles');
+        if(!document.getElementById('fallbackTailwind')){
+          var css = `
+            /* dynamic fallback to support layout when CDN blocked */
+            .container{max-width:1100px;margin:0 auto;padding:0 1rem;}
+            .mx-auto{margin-left:auto;margin-right:auto}
+            .py-3{padding-top:.75rem;padding-bottom:.75rem}
+            .py-6{padding-top:1.5rem;padding-bottom:1.5rem}
+            .mt-16{margin-top:4rem}
+            .text-gray-100{color:#e6eef8}
+            .bg-white\\/5{background:rgba(255,255,255,0.05)}
+            .hover\\:bg-white\\/5:hover{background:rgba(255,255,255,0.05)}
+            .rounded-lg{border-radius:8px}
+            .rounded-xl{border-radius:12px}
+            .hidden{display:none!important}
+            .flex{display:flex}
+            .grid{display:grid}
+            .place-items-center{place-items:center}
+            a{color:#9aa5ff;text-decoration:none}
+          `;
+          var s=document.createElement('style'); s.id='fallbackTailwind'; s.appendChild(document.createTextNode(css)); document.head.appendChild(s);
+        }
+      }
+    }, 1200);
   })();
 </script>
 <main class="flex-grow container mx-auto py-6 mt-16">

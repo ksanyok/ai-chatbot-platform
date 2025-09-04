@@ -12,9 +12,39 @@ $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
 $latestVersion = $localVersion;
 $updateAvailable = false;
 try {
-    // Fetch remote version file from GitHub
-    $remoteContent = @file_get_contents('https://raw.githubusercontent.com/ksanyok/ai-chatbot-platform/main/inc/version.php');
-    if ($remoteContent && preg_match("/APP_VERSION\s*=\s*['\"]([\d\.]+)['\"]/i", $remoteContent, $m)) {
+    // Cache remote version for 1 hour to reduce requests and avoid rate limits
+    $cacheFile = sys_get_temp_dir() . '/ai_chatbot_latest_version.cache';
+    $cacheTtl = 3600; // seconds
+    $remoteContent = null;
+
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheTtl)) {
+        $remoteContent = @file_get_contents($cacheFile);
+    } else {
+        // First try file_get_contents (works when allow_url_fopen=On)
+        if (ini_get('allow_url_fopen')) {
+            $remoteContent = @file_get_contents('https://raw.githubusercontent.com/ksanyok/ai-chatbot-platform/main/inc/version.php');
+        }
+        // Fallback to cURL when file_get_contents is not permitted or failed
+        if (!$remoteContent && function_exists('curl_init')) {
+            $ch = curl_init('https://raw.githubusercontent.com/ksanyok/ai-chatbot-platform/main/inc/version.php');
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'AI Chatbot Platform Version Checker');
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            $data = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($httpCode === 200 && $data) {
+                $remoteContent = $data;
+            }
+        }
+        // Store to cache if we fetched content
+        if ($remoteContent) {
+            @file_put_contents($cacheFile, $remoteContent);
+        }
+    }
+
+    if ($remoteContent && preg_match("/APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]/i", $remoteContent, $m)) {
         $latestVersion = $m[1];
         $updateAvailable = version_compare($latestVersion, $localVersion, '>');
     }

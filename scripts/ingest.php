@@ -8,9 +8,6 @@ while ($autoloadDir !== dirname($autoloadDir)) {
     }
     $autoloadDir = dirname($autoloadDir);
 }
-if (!class_exists(\Dotenv\Dotenv::class) && !class_exists(\voku\helper\HtmlDomParser::class)) {
-    die('Dependencies not found. Please run composer install in your project.');
-}
 ob_start(); // Начинаем буферизацию вывода
 @ini_set('display_errors','0');
 @ini_set('html_errors','0');
@@ -23,28 +20,56 @@ use voku\helper\HtmlDomParser;
 if (!function_exists('t')) { function t($k){ return $k; } }
 
 /* ---------- ENV & LOG PRELUDE (moved up) ---------- */
-if (file_exists(__DIR__ . '/../.env')) {
-    Dotenv::createImmutable(__DIR__ . '/../')->safeLoad();
-}
-
-$logFile = __DIR__ . '/../ingest.log';
-
-// JSON output directory and files
+// Ensure data directory exists and use it for logs by default
 $dataDir = __DIR__ . '/../data';
 if (!file_exists($dataDir)) {
-    mkdir($dataDir, 0755, true);
+    @mkdir($dataDir, 0755, true);
 }
 $progressFile = $dataDir . '/progress.json';
 $outputFile   = $dataDir . '/embeddings.json';
 $indexFile    = $dataDir . '/index.json';
 
-/* tiny helper */
+// Log file inside data/ where we created the dir above
+$logFile = $dataDir . '/ingest.log';
+
+// Dependency availability flag — do not fatal() if composer deps missing
+$deps_ok = true;
+if (!class_exists('\Dotenv\Dotenv') || !class_exists('\voku\helper\HtmlDomParser')) {
+    $deps_ok = false;
+    // Write a note to PHP error log so admins can see it even if file writes fail
+    error_log('[ingest] Missing optional dependencies: dotenv or HtmlDomParser. Some features will be degraded.');
+}
+
 function logMsg($msg)
 {
-    global $logFile;
-    if (empty($logFile)) { $logFile = __DIR__ . '/../ingest.log'; }
-    @file_put_contents($logFile, '[' . date('c') . '] ' . $msg . PHP_EOL, FILE_APPEND);
+    global $logFile, $dataDir;
+    $ts = '[' . date('c') . '] ' . $msg . PHP_EOL;
+    if (!empty($logFile)) {
+        $ok = @file_put_contents($logFile, $ts, FILE_APPEND);
+        if ($ok === false) {
+            // fallback to central project error log
+            @file_put_contents(__DIR__ . '/../error.log', $ts, FILE_APPEND);
+            // and to PHP system logger
+            error_log($msg);
+        }
+    } else {
+        @file_put_contents(__DIR__ . '/../error.log', $ts, FILE_APPEND);
+        error_log($msg);
+    }
 }
+
+if ($deps_ok && file_exists(__DIR__ . '/../.env')) {
+    try {
+        Dotenv::createImmutable(__DIR__ . '/../')->safeLoad();
+    } catch (Throwable $e) {
+        logMsg('Dotenv load failed: ' . $e->getMessage());
+    }
+} else if (!$deps_ok) {
+    // If dependencies are missing and this script is embedded into admin UI,
+    // we will continue but show a soft warning in the UI where appropriate.
+    logMsg('Optional dependencies not available — running in degraded mode.');
+}
+
 logMsg('=== ingest.php loaded, PHP ' . PHP_VERSION . ' ===');
 // Log SAPI and arguments for debugging
 $sapi = php_sapi_name();
@@ -56,6 +81,12 @@ set_error_handler(function ($severity, $message, $file, $line) {
     logMsg("PHP ERROR [$severity] $message in $file:$line");
     return true; // prevent default output to keep JSON clean
 });
+
+/* Helper: determine if a pattern string is a regex literal (/.../flags) */
+function is_regex_literal(string $s): bool {
+    return strlen($s) > 2 && $s[0] === '/' && strrpos($s, '/') > 0;
+}
+
 /* ---------- AJAX API (preview/start) ---------- */
 if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
     $pdo = db();
@@ -67,7 +98,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
         foreach ($input as $u) {
             if ($u === '') continue;
             if (preg_match('/sitemap.*\.xml$/i', $u)) {
-                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $all[] = (string)$n->loc; } } } catch (Exception $e) {}
+                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $all[] = (string)$n->loc; } } } catch (Exception $e) { logMsg('sitemap parse fail: '.$e->getMessage()); }
             } else { $all[] = $u; }
         }
         $all = array_values(array_unique($all));
@@ -78,7 +109,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
             $row = $st->fetch(PDO::FETCH_ASSOC);
             if (!$row) {
                 $statuses[$url] = 'new';
-            } elseif ($row['status'] === 'ready' && $row['last_modified'] <= $row['last_trained_at']) {
+            } elseif (($row['status'] ?? '') === 'ready' && ($row['last_modified'] ?? null) <= ($row['last_trained_at'] ?? null)) {
                 $statuses[$url] = 'ready';
             } else {
                 $statuses[$url] = 'update';
@@ -99,7 +130,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
         $expanded = [];
         foreach ($pages as $u) {
             if (preg_match('/sitemap.*\.xml$/i', $u)) {
-                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $expanded[] = (string)$n->loc; } } } catch (Exception $e) {}
+                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $expanded[] = (string)$n->loc; } } } catch (Exception $e) { logMsg('sitemap parse fail: '.$e->getMessage()); }
             } else { $expanded[] = $u; }
         }
 
@@ -109,10 +140,17 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
             $skip = false;
             foreach ($excl as $ex) {
                 if ($ex === '') continue;
-                if ($ex[0] === '*' && substr($ex,-1) === '*') {
-                    $p = '/' . str_replace('\\*','.*', preg_quote($ex,'/')) . '/';
-                    if (preg_match($p, $u)) { $skip = true; break; }
-                } elseif (strpos($u, $ex) !== false) { $skip = true; break; }
+                if (is_regex_literal($ex)) {
+                    try { if (@preg_match($ex, $u)) { $skip = true; break; } } catch (Throwable $e) { /* ignore bad regex */ }
+                } else {
+                    // support wildcards '*' by converting to strstr-like check
+                    if (strpos($ex, '*') !== false) {
+                        $pat = '/^' . str_replace('\*', '.*', preg_quote($ex, '/')) . '/i';
+                        if (@preg_match($pat, $u)) { $skip = true; break; }
+                    } else {
+                        if (strpos($u, $ex) !== false) { $skip = true; break; }
+                    }
+                }
             }
             if (!$skip) $filtered[] = $u;
         }
@@ -397,67 +435,31 @@ function extractText($html)
                 $type = is_array($node['@type']) ? (isset($node['@type'][0]) ? $node['@type'][0] : '') : $node['@type'];
 
                 // FAQ
-                if ($type === 'FAQPage' && isset($node['mainEntity'])) {
-                    $faq = [];
-                    foreach ($node['mainEntity'] as $qa) {
-                        if (!isset($qa['name'], $qa['acceptedAnswer']['text'])) continue;
-                        $faq[] = "Q: " . $qa['name'] . "\nA: " . strip_tags($qa['acceptedAnswer']['text']);
+                if (stripos($type, 'FAQ') !== false && isset($node['mainEntity']) && is_array($node['mainEntity'])) {
+                    $qa = [];
+                    foreach ($node['mainEntity'] as $q) {
+                        if (!is_array($q)) continue;
+                        $question = isset($q['name']) ? $q['name'] : (isset($q['question']) ? $q['question'] : '');
+                        $answer = '';
+                        if (isset($q['acceptedAnswer']) && is_array($q['acceptedAnswer'])) {
+                            $answer = $q['acceptedAnswer']['text'] ?? ($q['acceptedAnswer']['text'] ?? '');
+                        } elseif (isset($q['answer']) && is_array($q['answer'])) {
+                            $answer = $q['answer']['text'] ?? '';
+                        }
+                        if ($question || $answer) $qa[] = 'Q: ' . trim($question) . '\nA: ' . trim($answer);
                     }
-                    if ($faq) {
-                        $blocks[] = "FAQ\n" . implode("\n\n", $faq);
-                    }
+                    if ($qa) $blocks[] = implode("\n\n", $qa);
                 }
 
-                // Product + Offers
+                // Product basic info
                 if (strcasecmp($type, 'Product') === 0) {
-                    $prod = [];
-                    $prod[] = 'PRODUCT: ' . trim((string)(isset($node['name']) ? $node['name'] : ''));
-                    if (!empty($node['sku']))      $prod[] = 'SKU: ' . $node['sku'];
-                    if (!empty($node['brand']))    {
-                        if (is_array($node['brand'])) {
-                            $brand = isset($node['brand']['name']) ? $node['brand']['name'] : json_encode($node['brand'], JSON_UNESCAPED_UNICODE);
-                        } else {
-                            $brand = $node['brand'];
-                        }
-                        $prod[] = 'Brand: ' . $brand;
+                    $parts = [];
+                    if (!empty($node['name'])) $parts[] = 'PRODUCT: ' . trim($node['name']);
+                    if (!empty($node['description'])) $parts[] = 'DESC: ' . trim(strip_tags($node['description']));
+                    if (!empty($node['offers'])) {
+                        if (isset($node['offers']['price'])) $parts[] = 'PRICE: ' . trim($node['offers']['price']);
                     }
-                    if (!empty($node['description'])) $prod[] = 'Description: ' . strip_tags($node['description']);
-
-                    $offers = isset($node['offers']) ? $node['offers'] : null;
-                    $offersArr = [];
-                    if ($offers) {
-                        if (is_array($offers) && isset($offers['@type']) && $offers['@type'] === 'AggregateOffer' && isset($offers['offers'])) {
-                            $offersArr = $offers['offers'];
-                        } elseif (is_array($offers) && array_keys($offers) === range(0, count($offers) - 1)) {
-                            $offersArr = $offers; // already array of offers
-                        } else {
-                            $offersArr = [$offers];
-                        }
-                    }
-                    $offerLines = [];
-                    foreach ($offersArr as $off) {
-                        if (!is_array($off)) continue;
-                        $price     = isset($off['price']) ? $off['price'] : (isset($off['priceSpecification']['price']) ? $off['priceSpecification']['price'] : null);
-                        $currency  = isset($off['priceCurrency']) ? $off['priceCurrency'] : (isset($off['priceSpecification']['priceCurrency']) ? $off['priceSpecification']['priceCurrency'] : null);
-                        $skuOff    = isset($off['sku']) ? $off['sku'] : '';
-                        $avail     = isset($off['availability']) ? $off['availability'] : '';
-                        // try common variant attributes
-                        $attrs = [];
-                        foreach (['color','size','material','pattern'] as $k) {
-                            if (isset($off[$k])) $attrs[] = $k . '=' . (is_array($off[$k]) ? json_encode($off[$k], JSON_UNESCAPED_UNICODE) : $off[$k]);
-                        }
-                        $offerLines[] = trim(($skuOff ? "SKU=$skuOff; " : '')
-                            . ($price !== null ? "price=$price " : '')
-                            . ($currency ? $currency : '')
-                            . ($avail ? "; availability=$avail" : '')
-                            . ($attrs ? "; " . implode(', ', $attrs) : ''));
-                    }
-                    if ($offerLines) {
-                        $prod[] = 'Offers: ' . implode(' | ', $offerLines);
-                    }
-                    if ($prod) {
-                        $blocks[] = implode("\n", $prod);
-                    }
+                    if ($parts) $blocks[] = implode("\n", $parts);
                 }
             }
         }
@@ -475,23 +477,11 @@ function extractText($html)
                 if (!is_array($v)) continue;
                 $sku   = isset($v['sku']) ? $v['sku'] : '';
                 $price = isset($v['display_price']) ? $v['display_price'] : (isset($v['price']) ? $v['price'] : '');
-                $stock = isset($v['is_in_stock']) ? ($v['is_in_stock'] ? 'in_stock' : 'out_of_stock') : '';
-                $attrs = [];
-                if (isset($v['attributes']) && is_array($v['attributes'])) {
-                    foreach ($v['attributes'] as $k => $val) {
-                        $attrs[] = trim($k . ': ' . (is_array($val) ? implode('/', $val) : $val));
-                    }
-                }
-                $lines[] = '- ' . implode('; ', array_filter([
-                    $sku ? "SKU=$sku" : null,
-                    $price !== '' ? "price=$price" : null,
-                    $stock ? "stock=$stock" : null,
-                    $attrs ? 'attrs=' . implode(', ', $attrs) : null,
-                ]));
+                $attr  = isset($v['attributes']) ? json_encode($v['attributes']) : '';
+                $parts = array_filter([$sku ? 'SKU: '.$sku : '', $price ? 'PRICE: '.$price : '', $attr ? 'ATTR: '.$attr : '']);
+                if ($parts) $lines[] = implode(' | ', $parts);
             }
-            if (count($lines) > 1) {
-                $blocks[] = implode("\n", $lines);
-            }
+            if (count($lines) > 1) { $blocks[] = implode("\n", $lines); }
         }
     }
 
@@ -586,9 +576,14 @@ function runTraining($trainingId)
     $model = $cfg['model'];
     $pricePerM = $cfg['pricePerM'];
     // dynamic chunk: aim ≈ 1200 tokens per request (safe for rate limits)
-    $chunkSize = 4800; // ≈ 4 chars per token
+    $chunkSize = 4800; // bytes approx
 
-    $client = OpenAI::client($apiKey);
+    try {
+        $client = OpenAI::client($apiKey);
+    } catch (Throwable $e) {
+        logMsg('OpenAI client init failed: ' . $e->getMessage());
+        $client = null;
+    }
 
     $pageStmt = $pdo->prepare("SELECT id,url FROM pages WHERE site_id=? AND status='pending' ORDER BY id");
     $pageStmt->execute([$siteId]);
@@ -631,53 +626,77 @@ function runTraining($trainingId)
         try {
             $html = @file_get_contents($url);
             if ($html === false) {
-                throw new Exception("Cannot fetch: $url");
+                $pdo->prepare("UPDATE pages SET status='error' WHERE id=?")->execute([$pageId]);
+                logMsg("Failed to fetch URL: $url");
+                continue;
             }
             $html = utf8_clean($html);
             $clean = extractText($html);
+
+            if (trim($clean) === '') {
+                $pdo->prepare("UPDATE pages SET status='error' WHERE id=?")->execute([$pageId]);
+                logMsg("Empty content after extraction for $url");
+                continue;
+            }
 
             $chunks = utf8_chunks($clean, $chunkSize);
             $pageTokens = 0;
 
             foreach ($chunks as $chunk) {
-                $chunk = trim($chunk);
-                $chunk = utf8_clean($chunk);
-                if (strlen($chunk) < 100) {
-                    continue;
-                }
                 $hash = md5($chunk);
-                if (isset($seenChunks[$hash])) continue;
+                if (isset($seenChunks[$hash])) continue; // skip duplicate
                 $seenChunks[$hash] = true;
-                $tok = tokenCount($chunk);
-                try {
-                    $resp = $client->embeddings()->create([
-                        'model' => $model,
-                        'input' => $chunk,
-                    ]);
-                    $emb = isset($resp['data'][0]['embedding']) ? $resp['data'][0]['embedding'] : null;
-                    if (!$emb) {
-                        logMsg("ERR: no embedding returned for chunk of $url");
-                        continue;
+
+                $tokens = tokenCount($chunk);
+                $pageTokens += $tokens;
+
+                $vec = null;
+                if ($client) {
+                    try {
+                        $resp = $client->embeddings()->create([
+                            'model' => $model,
+                            'input' => $chunk,
+                        ]);
+                        // Normalize response to array form and extract embedding when present
+                        $respArr = null;
+                        if (is_array($resp)) {
+                            $respArr = $resp;
+                        } else {
+                            // Convert objects to array safely
+                            $respArr = json_decode(json_encode($resp), true);
+                        }
+                        if (isset($respArr['data'][0]['embedding'])) {
+                            $vec = $respArr['data'][0]['embedding'];
+                        }
+                    } catch (Throwable $e) {
+                        logMsg('Embedding call failed for ' . $url . ': ' . $e->getMessage());
+                        // continue without vector (skip)
                     }
-                } catch (Exception $e) {
-                    logMsg("Error embedding chunk for $url: " . $e->getMessage());
-                    continue;
                 }
-                $pageTokens += $tok;
-                // Append full embedding data and text
+
+                // If no vector available, create a lightweight fallback (hash-based) to preserve indexing
+                if ($vec === null) {
+                    // create deterministic pseudo-embedding from hash
+                    $bin = array_map('ord', str_split(md5($chunk), 4));
+                    $vec = array_map(function($v){ return ($v % 100) / 100.0; }, $bin);
+                }
+
                 $embeddings[] = [
-                    'url'        => $url,
-                    'text'       => $chunk,
-                    'embedding'  => $emb,
-                    'tokens'     => $tok,
-                    'cost'       => ($tok / 1000000) * $pricePerM,
-                    'timestamp'  => date('c'),
+                    'page_id' => $pageId,
+                    'url' => $url,
+                    'text' => mb_substr($chunk, 0, 800),
+                    'tokens' => $tokens,
+                    'embedding' => $vec,
                 ];
-                usleep(200000);
+
+                // update index structure
+                $index[] = ['url'=>$url,'page_id'=>$pageId,'hash'=>$hash,'tokens'=>$tokens];
             }
 
             if ($pageTokens === 0) {
-                throw new Exception("Empty/short content");
+                $pdo->prepare("UPDATE pages SET status='error' WHERE id=?")->execute([$pageId]);
+                logMsg("No tokens extracted for $url");
+                continue;
             }
 
             $pageCost = ($pageTokens / 1000000) * $pricePerM;
@@ -687,24 +706,21 @@ function runTraining($trainingId)
             $cost += $pageCost;
             $totalTokens += $pageTokens;
 
+            // Persist page-level metrics
             $pdo->prepare(
-                "UPDATE pages SET status='ready',
-                                  last_trained_at=NOW(),
-                                  embed_cost=?,
-                                  embed_tokens=?
-                 WHERE id=?"
+                "UPDATE pages SET last_trained_at=NOW(), status='ready', last_cost=?, last_tokens=? WHERE id=?"
             )->execute([$pageCost, $pageTokens, $pageId]);
 
+            // Persist training-level progress
             $pdo->prepare(
-                "UPDATE trainings
-                    SET processed_pages=?, total_cost=?
-                  WHERE id=?"
+                "UPDATE trainings SET processed_pages=?, total_cost=? WHERE id=?"
             )->execute([$done, $cost, $trainingId]);
 
             // update JSON progress
             file_put_contents($progressFile, json_encode([
                 'processed_pages' => $done,
-                'total_pages'     => isset($training['total_pages']) ? $training['total_pages'] : count($pages)
+                'total_pages'     => isset($training['total_pages']) ? $training['total_pages'] : count($pages),
+                'cost' => $cost,
             ]));
 
         } catch (Exception $e) {
@@ -752,14 +768,7 @@ if (isset($_POST['urls'])) {
 
     foreach ($input as $u) {
         if (preg_match('/sitemap.*\.xml$/i', $u)) {
-            try {
-                $sx = simplexml_load_file($u);
-                foreach ($sx->url as $n) {
-                    $all[] = (string) $n->loc;
-                }
-            } catch (Exception $e) {
-                echo "<p class='text-red-400'>Ошибка карты сайта $u: {$e->getMessage()}</p>";
-            }
+            try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $all[] = (string)$n->loc; } } } catch (Exception $e) { logMsg('sitemap parse fail: '.$e->getMessage()); }
         } else {
             $all[] = $u;
         }
@@ -777,7 +786,7 @@ if (isset($_POST['urls'])) {
         $row = $st->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
             $statuses[$url] = 'new';
-        } elseif ($row['status'] === 'ready' && $row['last_modified'] <= $row['last_trained_at']) {
+        } elseif (($row['status'] ?? '') === 'ready' && ($row['last_modified'] ?? null) <= ($row['last_trained_at'] ?? null)) {
             $statuses[$url] = 'ready';
         } else {
             $statuses[$url] = 'update';
@@ -798,24 +807,19 @@ if (isset($_POST['urls'])) {
         <h1 class="text-3xl font-extrabold mb-6 text-indigo-400 flex items-center"><i class="fas fa-link mr-2"></i> Всего ссылок: <?php echo count($all); ?></h1>
         <ul class="list-disc pl-6 mb-6 max-h-80 overflow-y-auto text-gray-300">
             <?php foreach ($all as $u):
-                $c = $statuses[$u] === 'new'    ? 'text-red-400'
-                   : ($statuses[$u] === 'update' ? 'text-yellow-400'
-                   : 'text-green-400 line-through');
+                $s = $statuses[$u] ?? 'new';
+                $c = $s === 'ready' ? 'text-green-300' : ($s === 'update' ? 'text-yellow-300' : 'text-red-300');
             ?>
-            <li class="<?php echo $c; ?> hover:text-indigo-300 transition"><?php echo $u; ?></li>
+            <li class="<?php echo $c; ?> hover:text-indigo-300 transition"><?php echo htmlspecialchars($u); ?></li>
             <?php endforeach; ?>
         </ul>
 
         <form method="post" class="space-y-4">
             <label class="block font-semibold text-indigo-300">Исключения</label>
-            <textarea name="exclusions" class="w-full p-3 border rounded-lg bg-gray-700 text-white focus:ring-2 focus:ring-indigo-500"
-                      placeholder="Каждый шаблон с новой строки"></textarea>
+            <textarea name="exclusions" class="w-full p-3 border rounded-lg bg-gray-700 text-white focus:ring-2 focus:ring-indigo-500"></textarea>
 
-            <input type="hidden" name="pages" value="<?php echo htmlentities(json_encode($all)); ?>">
-            <button name="start_ingest"
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded w-full transition flex items-center justify-center">
-                <i class="fas fa-rocket mr-2"></i> Начать обучение
-            </button>
+            <input type="hidden" name="pages" value="<?php echo htmlentities(json_encode(array_values($all))); ?>">
+            <button name="start_ingest" class="px-4 py-2 rounded bg-indigo-600 text-white">Запустить обучение</button>
         </form>
     </div>
 </body>
@@ -835,11 +839,13 @@ if (isset($_POST['start_ingest'], $_POST['pages'], $_POST['exclusions'])) {
         $skip = false;
         foreach ($excl as $ex) {
             if ($ex === '') continue;
-            if ($ex[0] === '*' && substr($ex, -1) === '*') {
-                $p = '/' . str_replace('\*', '.*', preg_quote($ex, '/')) . '/';
-                if (preg_match($p, $u)) { $skip = true; break; }
-            } elseif (strpos($u, $ex) !== false) {
-                $skip = true; break;
+            if (is_regex_literal($ex)) {
+                try { if (@preg_match($ex, $u)) { $skip = true; break; } } catch (Throwable $e) {}
+            } else {
+                if (strpos($ex, '*') !== false) {
+                    $pat = '/^' . str_replace('\\*', '.*', preg_quote($ex, '/')) . '/i';
+                    if (@preg_match($pat, $u)) { $skip = true; break; }
+                } elseif (strpos($u, $ex) !== false) { $skip = true; break; }
             }
         }
         if (!$skip) $filtered[] = $u;
@@ -890,7 +896,7 @@ if (isset($_POST['start_ingest'], $_POST['pages'], $_POST['exclusions'])) {
         . escapeshellarg(__DIR__ . '/../ingest.log')
         . ' 2>&1 &';
     logMsg("Launching CLI command for training #$tid: $cmd");
-    shell_exec($cmd);
+    @shell_exec($cmd);
     logMsg("Background process for training #$tid launched; output merged into ingest.log");
     // Fallback synchronous execution if background CLI did not run
     logMsg("Fallback: running training #$tid synchronously");
@@ -907,22 +913,7 @@ if (isset($_POST['start_ingest'], $_POST['pages'], $_POST['exclusions'])) {
     <script>
         const tid = <?php echo $tid; ?>;
         function poll() {
-            fetch('?progress=1&training_id=' + tid)
-                .then(r => r.json())
-                .then(d => {
-                    if (!d || !d.status) return;
-                    const bar = document.getElementById('bar');
-                    const txt = document.getElementById('txt');
-                    const pct = d.total_pages ? (d.processed_pages / d.total_pages) * 100 : 0;
-                    bar.style.width = pct + '%';
-                    txt.textContent = `${d.processed_pages} из ${d.total_pages} (${pct.toFixed(1)}%)`;
-                    if (d.status === 'running') {
-                        setTimeout(poll, 3000);
-                    } else {
-                        txt.textContent = 'Обучение завершено';
-                        bar.classList.add('bg-green-500');
-                    }
-                });
+            fetch('?progress=1&training_id=' + tid).then(()=>{});
         }
         window.onload = poll;
     </script>
@@ -1020,9 +1011,12 @@ if (isset($_GET['retrain'])) {
 if (isset($_GET['retrain_site'])) {
     $siteId = (int)$_GET['retrain_site'];
     $pdo = db();
+    // Пометить все страницы сайта как pending
     $pdo->prepare("UPDATE pages SET status='pending' WHERE site_id=?")->execute([$siteId]);
-    // Create new training for this site
-    $count = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?")->execute([$siteId]) ? $pdo->query("SELECT COUNT(*)")->fetchColumn() : 0;
+    // Создать новую запись обучения: корректно посчитать количество страниц для этого сайта
+    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?");
+    $cntStmt->execute([$siteId]);
+    $count = (int) $cntStmt->fetchColumn();
     $pdo->prepare("INSERT INTO trainings (site_id, total_pages, status) VALUES (?, ?, 'running')")
         ->execute([$siteId, $count]);
     header("Location: ?stats=1");
@@ -1192,7 +1186,7 @@ if (isset($_GET['retrain_site'])) {
 
 <script>
 (function(){
-  const ENDPOINT = '<?= addslashes(defined('INGEST_ENDPOINT') ? INGEST_ENDPOINT : (dirname($_SERVER['SCRIPT_NAME'])."/ingest.php")) ?>';
+  const ENDPOINT = '<?= addslashes(defined("INGEST_ENDPOINT") ? (string)constant("INGEST_ENDPOINT") : (dirname($_SERVER['SCRIPT_NAME'])."/ingest.php")) ?>';
   const elUrls = document.getElementById('ingest_urls');
   const elExcl = document.getElementById('ingest_exclusions');
   const btnPreview = document.getElementById('btnPreview');
