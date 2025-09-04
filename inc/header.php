@@ -29,12 +29,41 @@ if ($dbh) {
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
     $lang = in_array($_POST['ui_lang'], ['en','ru'], true) ? $_POST['ui_lang'] : 'en';
     $_SESSION['ui_lang'] = $lang;
-    if ($dbh && !empty($_SESSION['user_id'])) {
+    if ($dbh) {
+        // Determine if session user is present and exists in bot_users
+        $userId = null;
+        if (!empty($_SESSION['user_id'])) {
+            try {
+                $check = $dbh->prepare("SELECT id FROM bot_users WHERE id=? LIMIT 1");
+                $check->execute([(int)$_SESSION['user_id']]);
+                $found = $check->fetchColumn();
+                if ($found) $userId = (int)$found;
+            } catch (Throwable $e) {
+                // ignore — we'll fall back to global pref
+            }
+        }
+
         try {
-            $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-            $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
+            if ($userId === null) {
+                // Save as a global preference (user_id IS NULL).
+                // Use select+update to avoid creating duplicate NULL-key rows.
+                $sel = $dbh->prepare("SELECT id FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+                $sel->execute();
+                $existing = $sel->fetchColumn();
+                if ($existing) {
+                    $up = $dbh->prepare("UPDATE user_prefs SET value=?, updated_at=NOW() WHERE id=?");
+                    $up->execute([$lang, $existing]);
+                } else {
+                    $ins = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (NULL, 'ui_lang', ?)");
+                    $ins->execute([$lang]);
+                }
+            } else {
+                // Save user-specific preference, after verifying user exists
+                $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value), updated_at=NOW()");
+                $stmt->execute([$userId, $lang]);
+            }
         } catch (Throwable $e) {
-            // Don't break the request on DB write failure; log for debugging
+            // Log but do not break the request
             @file_put_contents(__DIR__ . '/../error.log', '[' . date('c') . '] Language save failed: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
         }
     }
@@ -45,13 +74,49 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
 
 // Determine current UI language
 $ui_lang = 'en';
-if ($dbh && !empty($_SESSION['user_id'])) {
-    $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang'");
-    $stmt->execute([(int)$_SESSION['user_id']]);
-    $val = $stmt->fetchColumn();
-    if (is_string($val) && $val !== '') { $ui_lang = $val; }
-} elseif (!empty($_SESSION['ui_lang'])) {
-    $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en';
+if ($dbh) {
+    $userId = null;
+    if (!empty($_SESSION['user_id'])) {
+        try {
+            $check = $dbh->prepare("SELECT id FROM bot_users WHERE id=? LIMIT 1");
+            $check->execute([(int)$_SESSION['user_id']]);
+            $found = $check->fetchColumn();
+            if ($found) $userId = (int)$found;
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+    // Prefer user-specific preference if available
+    if ($userId !== null) {
+        try {
+            $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang' LIMIT 1");
+            $stmt->execute([$userId]);
+            $val = $stmt->fetchColumn();
+            if (is_string($val) && $val !== '') { $ui_lang = $val; }
+            else {
+                // fallback to global pref
+                $stmt2 = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+                $stmt2->execute();
+                $gval = $stmt2->fetchColumn();
+                if (is_string($gval) && $gval !== '') { $ui_lang = $gval; }
+            }
+        } catch (Throwable $e) {
+            // ignore and fall back to session or default
+        }
+    } else {
+        // No valid user: try global pref, then session
+        try {
+            $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id IS NULL AND pref='ui_lang' LIMIT 1");
+            $stmt->execute();
+            $gval = $stmt->fetchColumn();
+            if (is_string($gval) && $gval !== '') { $ui_lang = $gval; }
+            elseif (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
+        } catch (Throwable $e) {
+            if (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
+        }
+    }
+} else {
+    if (!empty($_SESSION['ui_lang'])) { $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en'; }
 }
 
 // Translations

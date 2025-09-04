@@ -33,9 +33,31 @@ function db(): PDO
         return $db;
     }
 
-    // Load environment variables from .env.php if present
+    // Load environment variables from .env if present (preferred) or legacy .env.php
+    $rootDir = __DIR__ . '/..';
     $envFile = __DIR__ . '/../.env.php';
-    if (file_exists($envFile)) {
+    if (file_exists($rootDir . '/.env')) {
+        // Try using vlucas/phpdotenv if available
+        if (class_exists('\Dotenv\Dotenv')) {
+            try {
+                \Dotenv\Dotenv::createImmutable($rootDir)->safeLoad();
+            } catch (Throwable $e) {
+                // ignore and continue — environment may already be set
+            }
+        } else {
+            // Fallback: parse simple KEY=VALUE lines
+            $lines = @file($rootDir . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if ($lines !== false) {
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if ($line === '' || strpos($line, '#') === 0) continue;
+                    if (strpos($line, '=') === false) continue;
+                    [$k, $v] = array_map('trim', explode('=', $line, 2));
+                    if ($k !== '') putenv("$k=$v");
+                }
+            }
+        }
+    } elseif (file_exists($envFile)) {
         require_once $envFile;
     }
 
@@ -55,7 +77,12 @@ function db(): PDO
     try {
         $db = new PDO($dsn, $user, $pass, $options);
     } catch (Throwable $e) {
-        // Redirect to install wizard if DB connection fails in a web context
+        // If explicit env flag requests redirect to install, do so. Otherwise throw to let caller handle it.
+        $redirect = getenv('REDIRECT_TO_INSTALL') ?: getenv('DB_REDIRECT_TO_INSTALL') ?: false;
+        if (!$redirect) {
+            // In web context, rethrow so the front controller can show a sensible error instead of an installer.
+            throw $e;
+        }
         if (php_sapi_name() !== 'cli') {
             header('Location: /install.php');
             exit;
@@ -239,9 +266,22 @@ function ensureTables(PDO $db): void
         value VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES bot_users(id),
         UNIQUE KEY uniq_user_pref (user_id, pref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Ensure the foreign key references bot_users with ON DELETE SET NULL to make user_id optional
+    try {
+        // Drop existing FK if it exists (constraint names may differ across installs)
+        $db->exec("ALTER TABLE user_prefs DROP FOREIGN KEY user_prefs_ibfk_1");
+    } catch (Throwable $e) {
+        // ignore if FK name doesn't exist
+    }
+    try {
+        // Add a safe FK that sets user_id to NULL when the referenced user is removed
+        $db->exec("ALTER TABLE user_prefs ADD CONSTRAINT user_prefs_ibfk_1 FOREIGN KEY (user_id) REFERENCES bot_users(id) ON DELETE SET NULL ON UPDATE CASCADE");
+    } catch (Throwable $e) {
+        // ignore errors (may already exist or bot_users missing during initial install)
+    }
 
     // Attempt to rename pref_key/pref_value columns from older schema
     try {
