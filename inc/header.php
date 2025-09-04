@@ -1,5 +1,4 @@
-<?php require_once __DIR__.'/auth.php'; ?>
-<?php
+<?php require_once __DIR__.'/auth.php';
 // --- UI language: persist per authorized user and load on each request ---
 $dbh = function_exists('db') ? db() : null;
 if ($dbh) {
@@ -13,9 +12,10 @@ if ($dbh) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
 }
 
-// Handle language switch (POST)
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
-    $lang = in_array($_POST['ui_lang'], ['en','ru'], true) ? $_POST['ui_lang'] : 'en';
+// Handle language switch (POST or GET)
+if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) || (isset($_GET['ui_lang']) && in_array($_GET['ui_lang'], ['en','ru'], true))) {
+    $lang = isset($_POST['ui_lang']) ? $_POST['ui_lang'] : $_GET['ui_lang'];
+    $lang = in_array($lang, ['en','ru'], true) ? $lang : 'en';
     // persist to session first so UI updates immediately
     $_SESSION['ui_lang'] = $lang;
     // persist per-user preference if DB available and user logged in
@@ -24,25 +24,40 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['ui_lang'])) {
             $stmt = $dbh->prepare("INSERT INTO user_prefs (user_id, pref, value) VALUES (?, 'ui_lang', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
             $stmt->execute([ (int)$_SESSION['user_id'], $lang ]);
         } catch (Throwable $e) {
-            // Не фатальная ошибка — логируем в файл и продолжаем (чтобы не давать 500 при проблемах с БД)
             @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] Language save error: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
         }
     }
-    // PRG pattern to avoid resubmission — редиректим на ту же страницу без POST
-    $redirectTo = strtok($_SERVER['REQUEST_URI'],'?') ?: '/';
-    header('Location: ' . $redirectTo . (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']!=='' ? ('?'.$_SERVER['QUERY_STRING']) : ''));
+
+    // Redirect to same URL without ui_lang parameter to avoid resubmission and keep clean URL
+    $uri = $_SERVER['REQUEST_URI'] ?? '/';
+    // remove ui_lang param from query string
+    $parts = parse_url($uri);
+    $path = $parts['path'] ?? '/';
+    $qs = [];
+    if (!empty($parts['query'])) {
+        parse_str($parts['query'], $qs);
+        unset($qs['ui_lang']);
+    }
+    $redirect = $path . (!empty($qs) ? '?' . http_build_query($qs) : '');
+    header('Location: ' . $redirect);
     exit;
 }
 
 // Determine current UI language
 $ui_lang = 'en';
-if ($dbh && !empty($_SESSION['user_id'])) {
-    $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang'");
-    $stmt->execute([(int)$_SESSION['user_id']]);
-    $val = $stmt->fetchColumn();
-    if (is_string($val) && $val !== '') { $ui_lang = $val; }
-} elseif (!empty($_SESSION['ui_lang'])) {
+// Сначала смотрим в сессии — это последнее действие пользователя (после POST).
+if (!empty($_SESSION['ui_lang'])) {
     $ui_lang = in_array($_SESSION['ui_lang'], ['en','ru'], true) ? $_SESSION['ui_lang'] : 'en';
+} elseif ($dbh && !empty($_SESSION['user_id'])) {
+    // Если в сессии ничего нет, пытаемся загрузить сохранённую настройку из БД
+    try {
+        $stmt = $dbh->prepare("SELECT value FROM user_prefs WHERE user_id=? AND pref='ui_lang'");
+        $stmt->execute([(int)$_SESSION['user_id']]);
+        $val = $stmt->fetchColumn();
+        if (is_string($val) && $val !== '') { $ui_lang = $val; }
+    } catch (Throwable $e) {
+        @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] Language load error: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
+    }
 }
 
 // Translations
