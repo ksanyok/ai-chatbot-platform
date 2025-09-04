@@ -544,6 +544,18 @@ function t(string $key): string {
         button { background: transparent; border: none; color: inherit; font: inherit; cursor: pointer; }
         /* simple responsive fix for mobile menu area */
         #mobileMenu { background: rgba(3,7,18,0.9); }
+
+        /* Fallback layout rules to emulate Tailwind's md: breakpoint behavior
+           Ensure desktop navigation is visible when Tailwind is unavailable. */
+        .desktop-nav { display: flex; }
+        /* hide desktop-nav on small screens */
+        @media (max-width: 768px) {
+            .desktop-nav { display: none !important; }
+            /* show mobile menu area on small screens only */
+            #mobileMenu { display: block !important; }
+        }
+        /* default: hide mobile menu in non-tailwind environments */
+        @media (min-width: 769px) { #mobileMenu { display: none !important; } }
     </style>
     <meta charset="utf-8">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -565,7 +577,7 @@ function t(string $key): string {
     </div>
 
     <!-- Desktop nav -->
-    <nav class="hidden md:flex items-center gap-2">
+    <nav class="hidden md:flex items-center gap-2 desktop-nav">
       <a href="/admin/dashboard.php" class="px-3 py-2 rounded-lg transition <?= $current==='dashboard.php'?'bg-white/10 text-indigo-300 ring-1 ring-white/10':'hover:bg-white/5' ?>">
         <i class="fas fa-tachometer-alt"></i> <span class="ml-1 hidden lg:inline"><?= htmlspecialchars(t('nav.dashboard')) ?></span>
       </a>
