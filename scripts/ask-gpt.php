@@ -38,11 +38,17 @@ $chatModel = $dbChat ?: 'gpt-4o-mini';
 $dbTop = db()->query("SELECT value FROM api_keys WHERE name='top_k'")->fetchColumn();
 $topResults = $dbTop ? intval($dbTop) : 3;
 
+
 $botGreeting = db()->query("SELECT value FROM api_keys WHERE name='bot_greeting'")->fetchColumn();
 $systemPrompt = db()->query("SELECT value FROM api_keys WHERE name='system_prompt'")->fetchColumn();
 if (!$systemPrompt) {
     $systemPrompt = "You are an intelligent assistant. Respond in English by default, but if the user asks in another language, reply in that language. Answer concisely, clearly, and to the point, using only the provided context. Greet the user once at the start of the conversation and do not repeat the greeting.";
 }
+/**
+ * Prevent the model from auto-greeting. We will inject greeting ourselves only when needed.
+ * Works regardless of what is saved in DB (RU/EN). 
+ */
+$systemPrompt .= " IMPORTANT: Do NOT include any greeting in your reply; greetings are handled by the application.";
 
 
 
@@ -57,7 +63,10 @@ if (!$question) {
 file_put_contents($logFile, "[" . date('c') . "] Вопрос: $question\n", FILE_APPEND);
 
 // We'll populate $userId and $historyMessages after computing the query embedding
+// We'll populate $userId and $historyMessages after computing the query embedding
 $userId = isset($argv[2]) ? $argv[2] : null;
+$shouldGreet = false;
+$lastInteractionAt = null;
 $historyMessages = [];
 
 // Fallback contacts for contact-related queries
@@ -91,6 +100,21 @@ file_put_contents($logFile, "[" . date('c') . "] queryEmbedding size: " . count(
 if ($userId) {
     try {
         $pdo = db();
+        // Determine last interaction time for greeting throttle (24h)
+        $tstmt = $pdo->prepare("SELECT MAX(created_at) AS last_at FROM user_messages WHERE user_id = ?");
+        $tstmt->execute([$userId]);
+        $lastInteractionAt = $tstmt->fetchColumn();
+        if ($lastInteractionAt) {
+            $ts = strtotime($lastInteractionAt);
+            if ($ts === false) {
+                $shouldGreet = false;
+            } else {
+                $shouldGreet = (time() - $ts) >= 24*3600; // greet again only if idle >= 24h
+            }
+        } else {
+            // no history at all → first message in conversation
+            $shouldGreet = true;
+        }
         // Таблица user_messages теперь создаётся централизованно в config/db.php (миграции).
         // Здесь просто работаем с ней; если её нет — ловим ошибку и продолжаем без персистентной истории.
 
@@ -126,6 +150,8 @@ if ($userId) {
                 $historyMessages[] = ['role' => 'assistant', 'content' => $s['content']];
             }
         }
+
+        // If we are going to greet now, we won't also fetch a greeting-like assistant message from history by similarity (see instructions).
 
         file_put_contents($logFile, "[".date('c')."] Loaded " . count($historyMessages) . " contextual messages for user_id=" . $userId . "\n", FILE_APPEND);
 
@@ -231,8 +257,13 @@ try {
     exit(1);
 }
 
+
 $finalAnswer = isset($response['choices'][0]['message']['content']) ? $response['choices'][0]['message']['content'] : "⚠️ Ошибка: пустой ответ";
 
+if ($userId && $shouldGreet && !empty($botGreeting)) {
+    $finalAnswer = trim($botGreeting) . "\n\n" . ltrim($finalAnswer);
+    file_put_contents($logFile, "[" . date('c') . "] Greeting injected (lastInteractionAt=" . ($lastInteractionAt ?: 'null') . ")\n", FILE_APPEND);
+}
 echo $finalAnswer;
 file_put_contents($logFile, "[" . date('c') . "] Ответ:\n$finalAnswer\n", FILE_APPEND);
 
