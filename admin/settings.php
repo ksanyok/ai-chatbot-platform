@@ -133,8 +133,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'whatsapp_access_token', 'whatsapp_phone_number_id', 'whatsapp_business_account_id'
     ] as $key) {
         if (isset($_POST[$key])) {
+            // Preserve multiline content; execute with parameter array to avoid driver LOB handling truncation
+            $value = $_POST[$key];
             $stmt = $dbh->prepare("INSERT INTO api_keys (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-            $stmt->execute([$key, trim($_POST[$key])]);
+            $stmt->execute([$key, $value]);
         }
     }
     echo '<div class="mb-4 text-green-400">'.htmlspecialchars(t('saved')).' ✅</div>';
@@ -416,11 +418,6 @@ $reachInfo = testWebhookReachability($webhookUrl);
         <h3 class="text-xl font-semibold mb-4 text-indigo-300 flex items-center gap-2"><i class="fas fa-sliders-h"></i> <?= htmlspecialchars(t('general.title')) ?></h3>
         <div class="grid md:grid-cols-2 gap-6">
           <div>
-            <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('openai.key')) ?></label>
-            <input name="openai_key" type="text" value="<?=htmlspecialchars($rows['openai_key']??'')?>" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition" />
-            <p class="text-xs text-gray-400 mt-1"><?= htmlspecialchars(t('hint.openai_key')) ?></p>
-          </div>
-          <div>
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('embedding.model')) ?></label>
             <select name="embedding_model" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition">
               <?php
@@ -437,6 +434,11 @@ $reachInfo = testWebhookReachability($webhookUrl);
               ?>
             </select>
             <p class="text-xs text-gray-400 mt-1"><?= htmlspecialchars(t('hint.embedding_model')) ?></p>
+          </div>
+          <div>
+            <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('openai.key')) ?></label>
+            <input name="openai_key" type="text" value="<?=htmlspecialchars($rows['openai_key']??'')?>" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition" />
+            <p class="text-xs text-gray-400 mt-1"><?= htmlspecialchars(t('hint.openai_key')) ?></p>
           </div>
           <div class="md:col-span-2">
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('bot.greeting')) ?></label>

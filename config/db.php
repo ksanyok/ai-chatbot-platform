@@ -126,6 +126,12 @@ function ensureTables(PDO $db): void
         // Column may already be renamed or not exist; ignore
     }
     try {
+        // If a column named `value` already exists but is too small (VARCHAR), convert it to LONGTEXT
+        $db->exec("ALTER TABLE api_keys MODIFY value LONGTEXT NOT NULL");
+    } catch (Throwable $e) {
+        // Column may not exist yet or may already be LONGTEXT; ignore errors
+    }
+    try {
         // Add updated_at column for modification timestamps
         $db->exec("ALTER TABLE api_keys ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
     } catch (Throwable $e) {
