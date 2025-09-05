@@ -29,4 +29,58 @@ $cost = isset($running['cost']) ? $running['cost'] : 0;
     }
     ?>
 </div>
+<script>
+  function preview(){
+    fetch(ENDPOINT, {method:'POST', body: fd({ajax:'1', action:'preview', urls: elUrls.value})})
+      .then(r=>r.text()).then(txt=>{ let d; try{ d=JSON.parse(txt); } catch(e){ console.error('Preview JSON parse failed:', txt); alert('Server returned invalid response for preview. See console for details.'); return; }
+        if(!d||!d.ok) return;
+        rawList = d.list||[]; totalRaw = d.total||rawList.length;
+        previewInfo.classList.remove('hidden');
+        previewInfo.textContent = `${d.total||rawList.length} URLs found`;
+        toStep2.classList.remove('opacity-60','cursor-not-allowed');
+        wrapPrev.classList.remove('hidden');
+        recount(applyFilters(rawList));
+      });
+  }
+
+  function poll(tid){
+    fetch(ENDPOINT + '?progress=1&training_id=' + encodeURIComponent(tid))
+      .then(r=>r.text()).then(txt=>{ let d; try{ d=JSON.parse(txt); } catch(e){ console.error('Progress JSON parse failed:', txt); alert('Server returned invalid response for progress. See console for details.'); return; }
+        if(!d||!d.status) return;
+        const pct = d.total_pages ? (d.processed_pages/d.total_pages*100) : 0;
+        if (bar) bar.style.width = pct.toFixed(1) + '%';
+        if (progTxt) progTxt.textContent = `${d.processed_pages||0} <?= htmlspecialchars(t('of')) ?> ${d.total_pages||0} (${pct.toFixed(1)}%)`;
+        if(d.status==='running') setTimeout(()=>poll(tid), 3000);
+      });
+  }
+
+  function start(){
+    const mode = (document.querySelector('input[name="procMode]:checked')||{value:'smart'}).value;
+    progWrap && progWrap.classList.remove('hidden');
+    fetch(ENDPOINT, {method:'POST', body: fd({ajax:'1', action:'start', urls: elUrls.value, exclusions: elExcl.value, mode})})
+      .then(r=>r.text()).then(txt=>{ let d; try{ d=JSON.parse(txt); } catch(e){ console.error('Start JSON parse failed:', txt); alert('Server returned invalid response when starting training. See console for details.'); return; } if(d&&d.ok&&d.tid){ poll(d.tid); refreshStats(); } });
+  }
+
+  function refreshStats(){
+    fetch(ENDPOINT, {method:'POST', body: fd({ajax:'1', action:'stats'})})
+      .then(r=>r.text())
+      .then(txt=>{ let d; try { d = JSON.parse(txt); } catch(e){ console.error('Stats JSON parse failed:', txt); alert('Server returned invalid response for stats. See console for details.'); return; }
+        if(!d||!d.ok) return; const rows=d.rows||[];
+        statsBody.innerHTML = rows.map(x=>`<tr>
+            <td class="py-2 pr-4">${x.url||'—'}</td>
+            <td class="py-2 pr-4 text-right">${x.trainings||0}</td>
+            <td class="py-2 pr-4 text-right">${x.total_pages||0}</td>
+            <td class="py-2 pr-4 text-right">${x.processed||0}</td>
+            <td class="py-2 text-left">${x.last_trained||'—'}</td>
+          </tr>`).join('');
+      });
+  }
+
+  function loadSummary(){
+    fetch(ENDPOINT, {method:'POST', body: fd({ajax:'1', action:'summary'})})
+      .then(r=>r.text())
+      .then(txt=>{ let d; try { d = JSON.parse(txt); } catch(e){ console.error('Summary JSON parse failed:', txt); alert('Server returned invalid response for summary. See console for details.'); return; }
+        if(!d||!d.ok) return; sumSites.textContent=d.sites||0; sumPages.textContent=d.trained||0; sumRunning.textContent=d.running||0; });
+  }
+</script>
 <?php require_once __DIR__.'/../inc/footer.php'; ?>

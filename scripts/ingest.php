@@ -8,8 +8,23 @@ while ($autoloadDir !== dirname($autoloadDir)) {
     }
     $autoloadDir = dirname($autoloadDir);
 }
-if (!class_exists(\Dotenv\Dotenv::class) && !class_exists(\voku\helper\HtmlDomParser::class)) {
-    die('Dependencies not found. Please run composer install in your project.');
+// If required classes are still missing, fail gracefully depending on how the script is used.
+$depsOk = class_exists(\Dotenv\Dotenv::class) && class_exists(\voku\helper\HtmlDomParser::class);
+if (!$depsOk) {
+    // Determine if this is an AJAX/background invocation (expecting JSON) or an embedded include (expecting HTML fragment)
+    $isAjax = (isset($_POST['ajax']) && $_POST['ajax'] === '1') || isset($_GET['run']) || isset($_GET['progress']);
+    if ($isAjax) {
+        // Return a JSON error (500) so frontend JSON.parse succeeds and shows a clear message
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8', true, 500);
+        }
+        echo json_encode(['ok' => false, 'error' => 'Dependencies not found. Please run composer install on the server.']);
+        exit;
+    } else {
+        // When embedded in admin UI, render a visible warning instead of aborting with plain text
+        echo '<div class="rounded-lg p-4 bg-red-700 text-white">Deps missing: run <code>composer install</code> in project root or ensure vendor/autoload.php is reachable.</div>';
+        return; // stop processing further when included
+    }
 }
 ob_start(); // Начинаем буферизацию вывода
 @ini_set('display_errors','0');
