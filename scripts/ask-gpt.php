@@ -50,22 +50,9 @@ if (!$question) {
 }
 file_put_contents($logFile, "[" . date('c') . "] Вопрос: $question\n", FILE_APPEND);
 
-// Retrieve user conversation history for context
+// We'll populate $userId and $historyMessages after computing the query embedding
 $userId = isset($argv[2]) ? $argv[2] : null;
 $historyMessages = [];
-if ($userId) {
-    try {
-        $stmt = db()->prepare("SELECT question, answer FROM history WHERE user_id = ? ORDER BY created_at ASC");
-        $stmt->execute([$userId]);
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            // Add user and assistant messages
-            $historyMessages[] = ['role' => 'user', 'content' => $row['question']];
-            $historyMessages[] = ['role' => 'assistant', 'content' => $row['answer']];
-        }
-    } catch (\Throwable $e) {
-        file_put_contents($logFile, "[".date('c')."] history fetch error: ".$e->getMessage()."\n", FILE_APPEND);
-    }
-}
 
 // Fallback contacts for contact-related queries
 $staticContacts = "If context has no valid contacts or links, you may offer these: Email: NathanielRothschild.Org@gmail.com; Whatsapp: https://wa.me/447878425100; Website: https://linktr.ee/rothschildfamilybank";
@@ -93,6 +80,53 @@ if (!$queryEmbedding) {
     exit(1);
 }
 file_put_contents($logFile, "[" . date('c') . "] queryEmbedding size: " . count($queryEmbedding) . "\n", FILE_APPEND);
+
+// ===== Per-user embedding-backed history retrieval =====
+if ($userId) {
+    try {
+        $pdo = db();
+        // Таблица user_messages теперь создаётся централизованно в config/db.php (миграции).
+        // Здесь просто работаем с ней; если её нет — ловим ошибку и продолжаем без персистентной истории.
+
+        // Load configurable limit for retrieved messages (by similarity)
+        $dbMax = $pdo->query("SELECT value FROM api_keys WHERE name='history_max_entries'")->fetchColumn();
+        $maxEntries = $dbMax ? max(1, intval($dbMax)) : 200;
+        $maxEntries = min($maxEntries, 2000);
+
+        // Fetch candidate messages for this user that have embeddings
+        $stmt = $pdo->prepare("SELECT role, content, embedding FROM user_messages WHERE user_id = ? AND embedding IS NOT NULL");
+        $stmt->execute([$userId]);
+        $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $scores = [];
+        foreach ($candidates as $c) {
+            $emb = json_decode($c['embedding'], true);
+            if (!is_array($emb) || count($emb) !== count($queryEmbedding)) continue;
+            // cosine similarity
+            $dot = 0.0; $na = 0.0; $nb = 0.0;
+            foreach ($queryEmbedding as $i => $v) { $dot += $v * ($emb[$i] ?? 0); $na += $v*$v; $nb += ($emb[$i] ?? 0)*($emb[$i] ?? 0); }
+            if ($na == 0 || $nb == 0) continue;
+            $score = $dot / (sqrt($na) * sqrt($nb));
+            $scores[] = ['score' => $score, 'role' => $c['role'], 'content' => $c['content']];
+        }
+        // sort by score desc
+        usort($scores, function($a,$b){ return ($b['score'] <=> $a['score']); });
+        $selected = array_slice($scores, 0, $maxEntries);
+        // Build history messages in chronological-ish order by grouping assistant/user pairs as found
+        foreach ($selected as $s) {
+            if ($s['role'] === 'user') {
+                $historyMessages[] = ['role' => 'user', 'content' => $s['content']];
+            } else {
+                $historyMessages[] = ['role' => 'assistant', 'content' => $s['content']];
+            }
+        }
+
+        file_put_contents($logFile, "[".date('c')."] Loaded " . count($historyMessages) . " contextual messages for user_id=" . $userId . "\n", FILE_APPEND);
+
+    } catch (\Throwable $e) {
+        file_put_contents($logFile, "[".date('c')."] user_messages retrieval error: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
+}
 
 // Шаг 2: загрузка базы embedding’ов
 $embeddingData = json_decode(file_get_contents(__DIR__ . '/../data/embeddings.json'), true);
@@ -195,3 +229,26 @@ $finalAnswer = isset($response['choices'][0]['message']['content']) ? $response[
 
 echo $finalAnswer;
 file_put_contents($logFile, "[" . date('c') . "] Ответ:\n$finalAnswer\n", FILE_APPEND);
+
+if ($userId) {
+    try {
+        // Save user's message embedding (we already have $queryEmbedding)
+        $pdo = db();
+        $ins = $pdo->prepare("INSERT INTO user_messages (user_id, role, content, embedding, created_at) VALUES (?, ?, ?, ?, NOW())");
+        $ins->execute([$userId, 'user', $question, json_encode($queryEmbedding, JSON_UNESCAPED_UNICODE)]);
+
+        // Compute embedding for assistant response and save
+        $assistantEmbedding = null;
+        try {
+            $ae = $openai->embeddings()->create(['model' => $model, 'input' => $finalAnswer]);
+            $assistantEmbedding = $ae['data'][0]['embedding'] ?? null;
+        } catch (\Throwable $e) {
+            file_put_contents($logFile, "[".date('c')."] assistant embedding error: " . $e->getMessage() . "\n", FILE_APPEND);
+        }
+        if (is_array($assistantEmbedding)) {
+            $ins->execute([$userId, 'assistant', $finalAnswer, json_encode($assistantEmbedding, JSON_UNESCAPED_UNICODE)]);
+        }
+    } catch (\Throwable $e) {
+        file_put_contents($logFile, "[".date('c')."] user_messages save error: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
+}

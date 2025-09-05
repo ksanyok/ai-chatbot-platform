@@ -118,6 +118,8 @@ $defaults = [
     // Ensure editable OpenAI rows exist by default (compat: openai_key and openai_api_key)
     'openai_key' => '',
     'openai_api_key' => '',
+    // Персональная история: сколько сообщений (user+assistant) хранить/извлекать для контекста
+    'history_max_entries' => '50',
 ];
 foreach ($defaults as $key => $val) {
     $stmt = $dbh->prepare("SELECT COUNT(*) FROM api_keys WHERE name = ?");
@@ -133,6 +135,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'openai_key', 'telegram_bot_token', 'embedding_model', 'bot_greeting', 'system_prompt', 'reaction_enabled',
         'facebook_reaction_enabled', 'facebook_app_id', 'facebook_app_secret', 'facebook_verification_token',
         'comment_trigger_enabled', 'comment_trigger_message',
+        'history_max_entries',
         'whatsapp_access_token', 'whatsapp_phone_number_id', 'whatsapp_business_account_id'
     ] as $key) {
         // Only process keys that were posted (preserve missing inputs) and trim whitespace
@@ -455,6 +458,11 @@ $reachInfo = testWebhookReachability($webhookUrl);
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('openai.key')) ?></label>
             <input name="openai_key" type="text" value="<?=htmlspecialchars($rows['openai_key']??'')?>" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition" />
             <p class="text-xs text-gray-400 mt-1"><?= htmlspecialchars(t('hint.openai_key')) ?></p>
+          </div>
+          <div>
+            <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('memory.limit')) ?></label>
+            <input name="history_max_entries" type="number" min="1" max="2000" value="<?=htmlspecialchars($rows['history_max_entries'] ?? '50')?>" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition" />
+            <p class="text-xs text-gray-400 mt-1">Максимальное количество сообщений (user+assistant) для загрузки в контекст при ответе. По умолчанию 50.</p>
           </div>
           <div class="md:col-span-2">
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('bot.greeting')) ?></label>

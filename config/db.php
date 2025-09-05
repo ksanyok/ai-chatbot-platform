@@ -298,4 +298,22 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
+
+    // Create user_messages table for per-user conversational embeddings and context storage.
+    // This table is intentionally separate from the global 'history' table to avoid mixing per-user memory
+    // with globally indexed training data. It stores individual messages (user/assistant) with their embeddings.
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS user_messages (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            role VARCHAR(16) NOT NULL,
+            content LONGTEXT NOT NULL,
+            embedding LONGTEXT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX (user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Throwable $e) {
+        // If creation fails for any reason, log to PHP error log but do not throw — runtime code will handle missing table.
+        error_log('[migrations] user_messages table creation failed: ' . $e->getMessage());
+    }
 }
