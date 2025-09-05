@@ -4,4 +4,4 @@
 // releasing new versions, update the string below.  Other scripts can
 // include this file and compare with remote versions.
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.4.2';

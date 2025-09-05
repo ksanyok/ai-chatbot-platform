@@ -462,7 +462,7 @@ $reachInfo = testWebhookReachability($webhookUrl);
           <div>
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('memory.limit')) ?></label>
             <input name="history_max_entries" type="number" min="1" max="2000" value="<?=htmlspecialchars($rows['history_max_entries'] ?? '50')?>" class="w-full px-3 py-2 rounded-lg bg-gray-900/60 text-gray-100 placeholder-gray-400 ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 outline-none transition" />
-            <p class="text-xs text-gray-400 mt-1">Максимальное количество сообщений (user+assistant) для загрузки в контекст при ответе. По умолчанию 50.</p>
+            <p class="text-xs text-gray-400 mt-1"><?= htmlspecialchars(t('hint.memory_limit')) ?></p>
           </div>
           <div class="md:col-span-2">
             <label class="block mb-1 font-semibold"><?= htmlspecialchars(t('bot.greeting')) ?></label>
