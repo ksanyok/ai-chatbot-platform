@@ -140,13 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             continue;
         }
         $value = trim((string)($_POST[$key] ?? ''));
-        // If there's already a non-empty value in DB and the submitted value is empty, skip update to avoid accidental erasure
-        $cur = $dbh->prepare("SELECT value FROM api_keys WHERE name = ?");
-        $cur->execute([$key]);
-        $existing = $cur->fetchColumn();
-        if ($existing !== false && $existing !== null && $existing !== '' && $value === '') {
-            continue;
-        }
+        // Save the posted value (including empty string when intentionally cleared)
         $stmt = $dbh->prepare("INSERT INTO api_keys (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
         $stmt->execute([$key, $value]);
 

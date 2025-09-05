@@ -61,9 +61,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 . "putenv('DB_USER=' . " . var_export($dbUser, true) . ");\n"
                 . "putenv('DB_PASS=' . " . var_export($dbPass, true) . ");\n";
             file_put_contents(__DIR__ . '/.env.php', $envContent);
-            // Redirect to home after successful installation
-            header('Location: index.php?installed=1');
-            exit;
+
+            // AFTER installation: ensure composer dependencies are available
+            function install_log($msg) { @file_put_contents(__DIR__.'/install.log', '['.date('c').'] '.$msg.PHP_EOL, FILE_APPEND); }
+            function run_command($cmd, &$output=null, &$exitCode=null) {
+                $output = null; $exitCode = null;
+                if (function_exists('proc_open')) {
+                    $descriptors = [1 => ['pipe','w'], 2 => ['pipe','w']];
+                    $proc = @proc_open($cmd, $descriptors, $pipes, __DIR__);
+                    if (is_resource($proc)) {
+                        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+                        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+                        $exitCode = proc_close($proc);
+                        $output = trim($out . "\n" . $err);
+                        return true;
+                    }
+                }
+                // fallback
+                if (function_exists('shell_exec')) {
+                    $out = @shell_exec($cmd . ' 2>&1');
+                    $output = $out;
+                    $exitCode = 0;
+                    return true;
+                }
+                return false;
+            }
+            function ensure_composer_and_install() {
+                $proj = __DIR__;
+                $vendor = $proj . '/vendor/autoload.php';
+                if (file_exists($vendor)) return [true, 'already_present'];
+                $log = '';
+                // 1) try system composer
+                $cmd = 'composer --version';
+                $out = null; $ec = null;
+                if (run_command($cmd, $out, $ec)) {
+                    install_log('composer check: ' . ($out ?: 'no output'));
+                    // Run composer install
+                    $cmd2 = 'composer install --no-dev --no-interaction --optimize-autoloader';
+                    run_command($cmd2, $out, $ec);
+                    install_log('composer install result: ' . ($out ?: '') . ' exit=' . intval($ec));
+                    if (file_exists($vendor)) return [true, 'composer_system'];
+                }
+                // 2) try to download composer.phar
+                $phar = $proj . '/composer.phar';
+                $downloaded = false;
+                // prefer curl
+                if (function_exists('curl_init')) {
+                    $ch = curl_init('https://getcomposer.org/download/latest-stable/composer.phar');
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                    $data = curl_exec($ch);
+                    $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    if ($http === 200 && $data && strlen($data) > 100000) { file_put_contents($phar, $data); $downloaded = true; }
+                } elseif (ini_get('allow_url_fopen')) {
+                    $data = @file_get_contents('https://getcomposer.org/download/latest-stable/composer.phar');
+                    if ($data && strlen($data) > 100000) { file_put_contents($phar, $data); $downloaded = true; }
+                }
+                if ($downloaded) {
+                    @chmod($phar, 0755);
+                    install_log('composer.phar downloaded');
+                    $cmd3 = escapeshellcmd(PHP_BINARY) . ' ' . escapeshellarg($phar) . ' install --no-dev --no-interaction --optimize-autoloader';
+                    run_command($cmd3, $out, $ec);
+                    install_log('composer.phar install result: ' . ($out ?: '') . ' exit=' . intval($ec));
+                    if (file_exists($vendor)) return [true, 'composer_phar'];
+                } else {
+                    install_log('composer.phar download failed or not allowed');
+                }
+                return [false, 'failed'];
+            }
+
+            list($okComposer, $composerMode) = ensure_composer_and_install();
+            if (!$okComposer) {
+                $error = "Установка завершена, но зависимости (vendor/) не установлены. Выполните в корне проекта: `composer install` или загрузите composer.phar. Подробности в install.log.";
+                install_log('Composer install failed during web install');
+                // don't redirect; show error to user
+            } else {
+                install_log('Composer OK via: ' . $composerMode);
+                // Redirect to home after successful installation
+                header('Location: index.php?installed=1');
+                exit;
+            }
         } catch (Exception $e) {
             $error = 'Ошибка подключения или установки: ' . $e->getMessage();
         }

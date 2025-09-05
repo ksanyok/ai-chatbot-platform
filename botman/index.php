@@ -122,7 +122,7 @@ try {
     $botman = BotManFactory::create($config);
 
     // Обработка входящего текста и автоответ на комментарии Facebook
-    $botman->hears('.*', function ($bot) use ($pdo, $greeting, $telegramToken, $reactionEnabled, $facebookReactionEnabled, $facebookToken, $logFile, $commentTriggerEnabled, $commentTriggerMessage) {
+    $botman->hears('.*', function ($bot) use ($pdo, $telegramToken, $reactionEnabled, $facebookReactionEnabled, $facebookToken, $logFile, $commentTriggerEnabled, $commentTriggerMessage) {
         $payload = $bot->getMessage()->getPayload();
         $senderId = $bot->getMessage()->getSender();
         $driverName = $bot->getDriver()->getName();
@@ -134,6 +134,13 @@ try {
         ];
         $channelName = $channelMap[$driverName] ?? 'web';
         file_put_contents($logFile, "[" . date('c') . "] Driver: $driverName\n", FILE_APPEND);
+
+        // Reload greeting from DB on each message so admin changes apply immediately
+        try {
+            $greeting = $pdo->query("SELECT value FROM api_keys WHERE name='bot_greeting'")->fetchColumn();
+        } catch (Throwable $e) {
+            $greeting = null;
+        }
 
         if ($driverName === 'WhatsApp') {
             file_put_contents($logFile, "[".date('c')."] WhatsApp raw payload: ".json_encode($payload, JSON_UNESCAPED_UNICODE)."\n", FILE_APPEND);
@@ -215,6 +222,13 @@ try {
         if ($count == 0 && $greeting && trim($greeting) !== '') {
             $bot->reply($greeting);
             // продолжаем генерировать ответ на первый вопрос
+            // Record that the bot greeted the user so the LLM won't repeat the greeting
+            try {
+                $stmt = $pdo->prepare("INSERT INTO history (user_id, question, answer, channel, created_at) VALUES (?, ?, ?, ?, NOW())");
+                $stmt->execute([$senderId, '/greeting', $greeting, $channelName]);
+            } catch (\Throwable $e) {
+                file_put_contents($logFile, "[".date('c')."] history insert error (greeting): ".$e->getMessage()."\n", FILE_APPEND);
+            }
         }
 
         if ($reactionEnabled == '1' && $driverName === 'Telegram') {

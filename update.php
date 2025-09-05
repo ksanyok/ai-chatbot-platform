@@ -140,6 +140,79 @@ if ($zip->open($tmpZip) === true) {
             copy($item->getRealPath(), $destPath);
         }
     }
+
+    // Attempt to ensure composer dependencies are present after update
+    function update_log($msg) { @file_put_contents(__DIR__.'/update.log', '['.date('c').'] '.$msg.PHP_EOL, FILE_APPEND); }
+    function run_command_for_update($cmd, &$output=null, &$exitCode=null) {
+        $output = null; $exitCode = null;
+        if (function_exists('proc_open')) {
+            $descriptors = [1 => ['pipe','w'], 2 => ['pipe','w']];
+            $proc = @proc_open($cmd, $descriptors, $pipes, __DIR__);
+            if (is_resource($proc)) {
+                $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+                $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+                $exitCode = proc_close($proc);
+                $output = trim($out . "\n" . $err);
+                return true;
+            }
+        }
+        if (function_exists('shell_exec')) {
+            $out = @shell_exec($cmd . ' 2>&1');
+            $output = $out;
+            $exitCode = 0;
+            return true;
+        }
+        return false;
+    }
+    function ensure_composer_and_install_update() {
+        $proj = __DIR__;
+        $vendor = $proj . '/vendor/autoload.php';
+        if (file_exists($vendor)) return [true, 'already_present'];
+        $out = null; $ec = null;
+        // Try system composer
+        if (run_command_for_update('composer --version', $out, $ec)) {
+            update_log('composer check: ' . ($out ?: 'no output'));
+            run_command_for_update('composer install --no-dev --no-interaction --optimize-autoloader', $out, $ec);
+            update_log('composer install result: ' . ($out ?: '') . ' exit=' . intval($ec));
+            if (file_exists($vendor)) return [true, 'composer_system'];
+        }
+        // Try download composer.phar
+        $phar = $proj . '/composer.phar';
+        $downloaded = false;
+        if (function_exists('curl_init')) {
+            $ch = curl_init('https://getcomposer.org/download/latest-stable/composer.phar');
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            $data = curl_exec($ch);
+            $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($http === 200 && $data && strlen($data) > 100000) { file_put_contents($phar, $data); $downloaded = true; }
+        } elseif (ini_get('allow_url_fopen')) {
+            $data = @file_get_contents('https://getcomposer.org/download/latest-stable/composer.phar');
+            if ($data && strlen($data) > 100000) { file_put_contents($phar, $data); $downloaded = true; }
+        }
+        if ($downloaded) {
+            @chmod($phar, 0755);
+            update_log('composer.phar downloaded');
+            $cmd3 = escapeshellcmd(PHP_BINARY) . ' ' . escapeshellarg($phar) . ' install --no-dev --no-interaction --optimize-autoloader';
+            run_command_for_update($cmd3, $out, $ec);
+            update_log('composer.phar install result: ' . ($out ?: '') . ' exit=' . intval($ec));
+            if (file_exists($vendor)) return [true, 'composer_phar'];
+        } else {
+            update_log('composer.phar download failed or not allowed');
+        }
+        return [false, 'failed'];
+    }
+
+    list($okComposer, $composerMode) = ensure_composer_and_install_update();
+    if ($okComposer) {
+        update_log('Composer OK via: ' . $composerMode);
+        $composerMsg = "\nComposer: dependencies installed via {$composerMode}.";
+    } else {
+        update_log('Composer install failed during update');
+        $composerMsg = "\nComposer: dependencies not installed. Run `composer install` in project root or provide composer.phar. See update.log for details.";
+    }
+
     // Cleanup temp files
     unlink($tmpZip);
     // Remove extracted data
@@ -151,7 +224,7 @@ if ($zip->open($tmpZip) === true) {
         rmdir($dir);
     }
         rrmdir($extractedDir);
-        respond_translated($labels, $lang, $labels[$lang]['success']);
+        respond_translated($labels, $lang, $labels[$lang]['success'] . $composerMsg);
 } else {
         respond_translated($labels, $lang, $labels[$lang]['zip_error'], false);
 }
