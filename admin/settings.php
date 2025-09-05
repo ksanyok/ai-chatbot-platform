@@ -115,6 +115,9 @@ $defaults = [
     'facebook_app_id' => '',
     'comment_trigger_enabled' => '0',
     'comment_trigger_message' => 'Hey there! I’m so happy you’re here, thanks so much for your interest in joining the rothschild community 😊 Click below to know more about the family ✨ https://linktr.ee/rothschildfamilybank',
+    // Ensure editable OpenAI rows exist by default (compat: openai_key and openai_api_key)
+    'openai_key' => '',
+    'openai_api_key' => '',
 ];
 foreach ($defaults as $key => $val) {
     $stmt = $dbh->prepare("SELECT COUNT(*) FROM api_keys WHERE name = ?");
@@ -132,11 +135,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'comment_trigger_enabled', 'comment_trigger_message',
         'whatsapp_access_token', 'whatsapp_phone_number_id', 'whatsapp_business_account_id'
     ] as $key) {
-        if (isset($_POST[$key])) {
-            // Preserve multiline content; execute with parameter array to avoid driver LOB handling truncation
-            $value = $_POST[$key];
-            $stmt = $dbh->prepare("INSERT INTO api_keys (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
-            $stmt->execute([$key, $value]);
+        // Only process keys that were posted (preserve missing inputs) and trim whitespace
+        if (!array_key_exists($key, $_POST)) {
+            continue;
+        }
+        $value = trim((string)($_POST[$key] ?? ''));
+        // If there's already a non-empty value in DB and the submitted value is empty, skip update to avoid accidental erasure
+        $cur = $dbh->prepare("SELECT value FROM api_keys WHERE name = ?");
+        $cur->execute([$key]);
+        $existing = $cur->fetchColumn();
+        if ($existing !== false && $existing !== null && $existing !== '' && $value === '') {
+            continue;
+        }
+        $stmt = $dbh->prepare("INSERT INTO api_keys (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
+        $stmt->execute([$key, $value]);
+
+        // Compatibility: mirror openai_key into openai_api_key so older code finds it (but don't erase existing non-empty alternative)
+        if ($key === 'openai_key') {
+            $cur2 = $dbh->prepare("SELECT value FROM api_keys WHERE name = ?");
+            $cur2->execute(['openai_api_key']);
+            $existing2 = $cur2->fetchColumn();
+            if (!($existing2 !== false && $existing2 !== null && $existing2 !== '' && $value === '')) {
+                $stmt2 = $dbh->prepare("INSERT INTO api_keys (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
+                $stmt2->execute(['openai_api_key', $value]);
+            }
         }
     }
     echo '<div class="mb-4 text-green-400">'.htmlspecialchars(t('saved')).' ✅</div>';
