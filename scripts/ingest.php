@@ -1,28 +1,53 @@
 <?php
-// Autoload dependencies from the nearest vendor directory
-$autoloadDir = __DIR__;
-while ($autoloadDir !== dirname($autoloadDir)) {
-    if (file_exists($autoloadDir . '/vendor/autoload.php')) {
-        require_once $autoloadDir . '/vendor/autoload.php';
+// Autoload dependencies from the nearest vendor directory (robust search)
+$tried = [];
+$pathsToTry = [];
+$base = __DIR__;
+// try climbing up to 6 levels from scripts/
+for ($i = 0; $i < 7; $i++) {
+    $pathsToTry[] = $base . str_repeat('/..', $i) . '/vendor/autoload.php';
+}
+// also try common locations relative to document root and realpath variants
+if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+    $pathsToTry[] = rtrim(realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT'], '/') . '/vendor/autoload.php';
+}
+$pathsToTry[] = __DIR__ . '/../vendor/autoload.php';
+$pathsToTry[] = realpath(__DIR__ . '/../vendor/autoload.php');
+$autoloadFound = false;
+foreach ($pathsToTry as $p) {
+    if (!$p) continue;
+    $p = str_replace('/./', '/', $p);
+    $p = realpath($p) ?: $p;
+    $tried[] = $p;
+    if (file_exists($p)) {
+        @require_once $p;
+        $autoloadFound = true;
         break;
     }
-    $autoloadDir = dirname($autoloadDir);
 }
 // If required classes are still missing, fail gracefully depending on how the script is used.
 $depsOk = class_exists(\Dotenv\Dotenv::class) && class_exists(\voku\helper\HtmlDomParser::class);
 if (!$depsOk) {
-    // Determine if this is an AJAX/background invocation (expecting JSON) or an embedded include (expecting HTML fragment)
     $isAjax = (isset($_POST['ajax']) && $_POST['ajax'] === '1') || isset($_GET['run']) || isset($_GET['progress']);
+    // Log diagnostic note for administrators
+    @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] deps_ok=false; autoload_found=' . ($autoloadFound ? '1' : '0') . '; tried=' . json_encode($tried) . "\n", FILE_APPEND);
     if ($isAjax) {
-        // Return a JSON error (500) so frontend JSON.parse succeeds and shows a clear message
         if (!headers_sent()) {
             header('Content-Type: application/json; charset=utf-8', true, 500);
         }
         echo json_encode(['ok' => false, 'error' => 'Dependencies not found. Please run composer install on the server.']);
         exit;
     } else {
-        // When embedded in admin UI, render a visible warning instead of aborting with plain text
-        echo '<div class="rounded-lg p-4 bg-red-700 text-white">Deps missing: run <code>composer install</code> in project root or ensure vendor/autoload.php is reachable.</div>';
+        // When embedded in admin UI, render a visible, actionable warning instead of aborting with plain text
+        $installUrl = (strpos($_SERVER['SCRIPT_NAME'], '/') === 0 ? '' : '') . '/install.php';
+        // ensure relative link works if app is in a subdirectory
+        $basePath = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+        if ($basePath === '') $basePath = '/';
+        $link = htmlspecialchars($basePath . '/install.php');
+        echo '<div class="rounded-lg p-4 bg-red-700 text-white">';
+        echo '<strong>Dependencies missing.</strong> Composer autoloader not found.\n';
+        echo 'Run <code>composer install</code> in the project root on your server, or open <a class="underline text-white/90" href="' . $link . '">install.php</a> to attempt installation from the web interface.';
+        echo '</div>';
         return; // stop processing further when included
     }
 }
