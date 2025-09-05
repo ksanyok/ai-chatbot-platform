@@ -145,6 +145,28 @@ function ensureTables(PDO $db): void
     }
     try {
         // Add unique constraint on (user_id_coalesce, name) if it doesn't exist
+        // But first deduplicate any existing rows so the ALTER won't fail and ON DUPLICATE KEY will behave correctly.
+        try {
+            $db->beginTransaction();
+            $dupStmt = $db->query("SELECT name, IFNULL(user_id,0) AS u, COUNT(*) AS c FROM api_keys GROUP BY u, name HAVING c > 1");
+            $dups = $dupStmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($dups as $d) {
+                $name = $d['name'];
+                $user = (int)$d['u'];
+                $keepStmt = $db->prepare("SELECT id FROM api_keys WHERE name = ? AND IFNULL(user_id,0) = ? ORDER BY updated_at DESC, id DESC LIMIT 1");
+                $keepStmt->execute([$name, $user]);
+                $keepId = $keepStmt->fetchColumn();
+                if ($keepId) {
+                    $del = $db->prepare("DELETE FROM api_keys WHERE name = ? AND IFNULL(user_id,0) = ? AND id <> ?");
+                    $del->execute([$name, $user, $keepId]);
+                }
+            }
+            $db->commit();
+        } catch (Throwable $e) {
+            // If dedupe fails for any reason, rollback and continue — ALTER may still fail but we avoid crashing
+            try { $db->rollBack(); } catch (Throwable $_) {}
+        }
+
         $db->exec("ALTER TABLE api_keys ADD CONSTRAINT uniq_api_user_name UNIQUE (user_id_coalesce, name)");
     } catch (Throwable $e) {
         // Constraint may already exist; ignore
