@@ -16,6 +16,36 @@ $cost = isset($running['cost']) ? $running['cost'] : 0;
     // Embedded ingest UI with endpoint awareness
     if (!defined('EMBEDDED_INGEST')) define('EMBEDDED_INGEST', true);
     $endpoint = '';
+
+    // Ensure Composer autoloader is available for embedded scripts (robust search)
+    $autoloadPaths = [];
+    $base = __DIR__;
+    for ($i = 0; $i < 7; $i++) {
+        $autoloadPaths[] = $base . str_repeat('/..', $i) . '/vendor/autoload.php';
+    }
+    if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+        $autoloadPaths[] = rtrim(realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT'], '/') . '/vendor/autoload.php';
+    }
+    $autoloadPaths[] = __DIR__ . '/../vendor/autoload.php';
+    $autoloadFound = false;
+    foreach ($autoloadPaths as $p) {
+        if (!$p) continue;
+        $p = str_replace('/./', '/', $p);
+        $rp = realpath($p) ?: $p;
+        if (file_exists($rp)) {
+            @require_once $rp;
+            $autoloadFound = true;
+            break;
+        }
+    }
+    // Last-resort: try one level up from project (handles some chroot setups)
+    if (!$autoloadFound) {
+        $maybe = dirname(__DIR__, 1) . '/vendor/autoload.php';
+        if (file_exists($maybe)) { @require_once $maybe; $autoloadFound = true; }
+    }
+    // Log diagnostic info for admins (non-fatal)
+    @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] admin/training.php autoload_found=' . ($autoloadFound ? '1' : '0') . '; tried=' . json_encode($autoloadPaths) . PHP_EOL, FILE_APPEND);
+
     if (file_exists(__DIR__.'/../scripts/ingest.php')) {
         $endpoint = dirname($_SERVER['SCRIPT_NAME']).'/../scripts/ingest.php';
         if (!defined('INGEST_ENDPOINT')) define('INGEST_ENDPOINT', $endpoint);
