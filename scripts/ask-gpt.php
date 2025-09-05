@@ -62,12 +62,26 @@ if (!$question) {
 }
 file_put_contents($logFile, "[" . date('c') . "] Вопрос: $question\n", FILE_APPEND);
 
-// We'll populate $userId and $historyMessages after computing the query embedding
-// We'll populate $userId and $historyMessages after computing the query embedding
 $userId = isset($argv[2]) ? $argv[2] : null;
+file_put_contents($logFile, "[" . date('c') . "] userId=" . var_export($userId,true) . "\n", FILE_APPEND);
+
 $shouldGreet = false;
 $lastInteractionAt = null;
 $historyMessages = [];
+
+$greetEligible = false;
+try {
+    if ($userId) {
+        $pdo = db();
+        // Create throttle table if missing (idempotent)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS user_greeting (
+            user_id VARCHAR(191) PRIMARY KEY,
+            last_greeted_at DATETIME NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    }
+} catch (\Throwable $e) {
+    file_put_contents($logFile, "[".date('c')."] greeting table init error: " . $e->getMessage() . "\n", FILE_APPEND);
+}
 
 // Fallback contacts for contact-related queries
 $staticContacts = "If context has no valid contacts or links, you may offer these: Email: NathanielRothschild.Org@gmail.com; Whatsapp: https://wa.me/447878425100; Website: https://linktr.ee/rothschildfamilybank";
@@ -115,6 +129,34 @@ if ($userId) {
             // no history at all → first message in conversation
             $shouldGreet = true;
         }
+
+        // DB-level throttle (strong guarantee even if saving history fails later)
+        try {
+            $pdo->beginTransaction();
+            $sel = $pdo->prepare("SELECT last_greeted_at FROM user_greeting WHERE user_id=? FOR UPDATE");
+            $sel->execute([$userId]);
+            $row = $sel->fetch(PDO::FETCH_ASSOC);
+            $now = time();
+            if ($row && !empty($row['last_greeted_at'])) {
+                $lg = strtotime($row['last_greeted_at']);
+                $greetEligible = ($now - $lg) >= 24*3600;
+            } else {
+                // First time recorded in throttle table
+                $greetEligible = true;
+            }
+            // If we (application) decided to greet AND DB throttle agrees -> update last_greeted_at
+            if ($shouldGreet && $greetEligible) {
+                $up = $pdo->prepare("INSERT INTO user_greeting (user_id,last_greeted_at) VALUES (?, NOW())
+                                     ON DUPLICATE KEY UPDATE last_greeted_at=VALUES(last_greeted_at)");
+                $up->execute([$userId]);
+                file_put_contents($logFile, "[".date('c')."] greeting throttle updated for user_id={$userId}\n", FILE_APPEND);
+            }
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo && $pdo->inTransaction()) { $pdo->rollBack(); }
+            file_put_contents($logFile, "[".date('c')."] greeting throttle error: " . $e->getMessage() . "\n", FILE_APPEND);
+        }
+
         // Таблица user_messages теперь создаётся централизованно в config/db.php (миграции).
         // Здесь просто работаем с ней; если её нет — ловим ошибку и продолжаем без персистентной истории.
 
@@ -260,9 +302,16 @@ try {
 
 $finalAnswer = isset($response['choices'][0]['message']['content']) ? $response['choices'][0]['message']['content'] : "⚠️ Ошибка: пустой ответ";
 
-if ($userId && $shouldGreet && !empty($botGreeting)) {
-    $finalAnswer = trim($botGreeting) . "\n\n" . ltrim($finalAnswer);
-    file_put_contents($logFile, "[" . date('c') . "] Greeting injected (lastInteractionAt=" . ($lastInteractionAt ?: 'null') . ")\n", FILE_APPEND);
+$greetText = trim((string)$botGreeting);
+if ($userId && $shouldGreet && $greetEligible && $greetText !== '') {
+    // Skip if assistant already starts with the same greeting (defensive)
+    $startsWithGreet = stripos(ltrim($finalAnswer), $greetText) === 0;
+    if (!$startsWithGreet) {
+        $finalAnswer = $greetText . "\n\n" . ltrim($finalAnswer);
+        file_put_contents($logFile, "[" . date('c') . "] Greeting injected (lastInteractionAt=" . ($lastInteractionAt ?: 'null') . "; DB=ok)\n", FILE_APPEND);
+    } else {
+        file_put_contents($logFile, "[" . date('c') . "] Greeting skipped (already present in model output)\n", FILE_APPEND);
+    }
 }
 echo $finalAnswer;
 file_put_contents($logFile, "[" . date('c') . "] Ответ:\n$finalAnswer\n", FILE_APPEND);
