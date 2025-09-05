@@ -91,18 +91,20 @@ function ensureTables(PDO $db): void
     // The `api_keys` table stores tokens or API credentials for external services on a per‑user basis.
     // Each record has a `name` identifying the type of key (e.g. 'telegram_bot_token'), a `value` storing
     // the actual token, timestamps for creation and update, and a foreign key linking back to the
-    // corresponding row in `bot_users`.  A unique index on `(user_id, name)` prevents duplicate
-    // entries for the same user and key name.
+    // corresponding row in `bot_users`.  A unique index on `(user_id_coalesce, name)` prevents duplicate
+    // entries for the same user and key name while allowing user_id to be NULL for global keys.
         $db->exec("CREATE TABLE IF NOT EXISTS api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
         -- user_id is optional. When null, the key applies globally rather than to a specific bot_user.
         user_id INT DEFAULT NULL,
         name VARCHAR(255) NOT NULL,
-        value VARCHAR(255) NOT NULL,
+        value LONGTEXT NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        -- generated column to treat NULL as 0 for uniqueness purposes
+        user_id_coalesce INT AS (IFNULL(user_id,0)) VIRTUAL,
         FOREIGN KEY (user_id) REFERENCES bot_users(id),
-        UNIQUE KEY uniq_api_user_name (user_id, name)
+        UNIQUE KEY uniq_api_user_name (user_id_coalesce, name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // Migrate legacy api_keys schema
@@ -118,8 +120,8 @@ function ensureTables(PDO $db): void
         // Column may already exist; ignore
     }
     try {
-        // Rename api_key to value if the old column exists
-        $db->exec("ALTER TABLE api_keys CHANGE api_key value VARCHAR(255) NOT NULL");
+        // Rename api_key to value if the old column exists. Use LONGTEXT to preserve multi-line prompts and large JSON blobs.
+        $db->exec("ALTER TABLE api_keys CHANGE api_key value LONGTEXT NOT NULL");
     } catch (Throwable $e) {
         // Column may already be renamed or not exist; ignore
     }
@@ -130,8 +132,14 @@ function ensureTables(PDO $db): void
         // Column may already exist; ignore
     }
     try {
-        // Add unique constraint on (user_id, name) if it doesn't exist
-        $db->exec("ALTER TABLE api_keys ADD CONSTRAINT uniq_api_user_name UNIQUE (user_id, name)");
+        // Add generated column for coalesced user_id if it doesn't exist
+        $db->exec("ALTER TABLE api_keys ADD COLUMN user_id_coalesce INT AS (IFNULL(user_id,0)) VIRTUAL");
+    } catch (Throwable $e) {
+        // Column may already exist; ignore
+    }
+    try {
+        // Add unique constraint on (user_id_coalesce, name) if it doesn't exist
+        $db->exec("ALTER TABLE api_keys ADD CONSTRAINT uniq_api_user_name UNIQUE (user_id_coalesce, name)");
     } catch (Throwable $e) {
         // Constraint may already exist; ignore
     }
