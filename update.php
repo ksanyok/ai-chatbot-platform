@@ -53,16 +53,60 @@ function respond_translated(array $labels, string $lang, string $message, bool $
     $title   = htmlspecialchars($labels[$lang]['title']);
     $heading = htmlspecialchars($labels[$lang]['heading']);
     $return  = htmlspecialchars($labels[$lang]['return']);
-    $msg     = htmlspecialchars($message);
-    echo '<!DOCTYPE html><html lang="' . $lang . '"><head><meta charset="UTF-8">';
+    $msg     = $message; // allow some HTML/newlines in message; we'll escape when placing into text nodes
+
+    // Try to determine local app version and last update timestamp
+    $localVer = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
+    $lastUpdateHuman = '—';
+    $lastFile = __DIR__ . '/data/last_update.txt';
+    if (file_exists($lastFile)) {
+        $iso = trim(@file_get_contents($lastFile));
+        if ($iso) {
+            try {
+                $dt = new DateTime($iso);
+                if ($lang === 'ru') {
+                    $months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+                    $lastUpdateHuman = $dt->format('j') . ' ' . $months[(int)$dt->format('n') - 1] . ' ' . $dt->format('Y');
+                } else {
+                    $lastUpdateHuman = $dt->format('F j, Y');
+                }
+            } catch (Exception $e) { /* ignore */ }
+        }
+    }
+
+    echo '<!DOCTYPE html><html lang="' . htmlspecialchars($lang) . '"><head><meta charset="UTF-8">';
+    echo '<meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . $title . '</title>';
     echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css">';
-    echo '</head><body class="p-8">';
-    echo '<div class="max-w-2xl mx-auto">';
-    echo '<h1 class="text-2xl font-bold mb-4">' . $heading . '</h1>';
-    echo '<div class="p-4 rounded ' . ($success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800') . '">' . $msg . '</div>';
-    echo '<a href="/" class="mt-4 inline-block text-emerald-600">' . $return . '</a>';
-    echo '</div></body></html>';
+    echo '</head><body class="bg-slate-900 text-slate-100">';
+    echo '<div class="min-h-screen flex items-center justify-center p-6">';
+    echo '<div class="max-w-2xl w-full">';
+    echo '<div class="rounded-2xl bg-gradient-to-br from-slate-800/60 to-slate-900/70 border border-white/6 p-6 shadow-xl">';
+    echo '<div class="flex items-center gap-4">';
+    echo '<div class="w-12 h-12 rounded-xl bg-emerald-500/20 grid place-items-center text-emerald-300 font-bold">BRS</div>';
+    echo '<div>';
+    echo '<h1 class="text-xl font-semibold">' . $heading . '</h1>';
+    echo '<p class="text-sm text-slate-300">' . htmlspecialchars($title) . '</p>';
+    echo '</div></div>';
+
+    echo '<div class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">';
+    echo '<div class="col-span-2">';
+    echo '<div class="p-4 rounded bg-slate-800/60 border border-white/4">';
+    echo '<p class="text-sm text-slate-300 mb-2">' . htmlspecialchars(strip_tags($msg)) . '</p>';
+    echo '</div></div>';
+    echo '<div class="p-4 rounded bg-slate-800/40 border border-white/4">';
+    echo '<div class="text-xs text-slate-400">' . htmlspecialchars($labels[$lang]['title']) . '</div>';
+    echo '<div class="mt-2 text-sm">v' . htmlspecialchars($localVer) . '</div>';
+    echo '<div class="mt-3 text-xs text-slate-400">' . htmlspecialchars($labels[$lang]['return']) . '</div>';
+    echo '<div class="mt-2 text-sm">' . htmlspecialchars($lastUpdateHuman) . '</div>';
+    echo '</div></div>';
+
+    echo '<div class="mt-6 flex items-center justify-between">';
+    echo '<a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-200 border border-emerald-400/10 hover:bg-emerald-500/30">' . $return . '</a>';
+    echo '<a href="/update.log" class="text-xs text-slate-400 hover:underline">View update.log</a>';
+    echo '</div>';
+
+    echo '</div></div></div></body></html>';
     exit;
 }
 
@@ -126,7 +170,11 @@ if ($zip->open($tmpZip) === true) {
         RecursiveIteratorIterator::SELF_FIRST
     );
     foreach ($iterator as $item) {
-        $destPath = __DIR__ . '/' . $iterator->getSubPathName();
+        // Build destination path by computing relative path from the extracted source dir
+        $sourcePath = $item->getPathname();
+        $relPath = ltrim(substr($sourcePath, strlen($sourceDir)), DIRECTORY_SEPARATOR);
+        if ($relPath === false) { $relPath = $item->getFilename(); }
+        $destPath = __DIR__ . '/' . $relPath;
         // Skip vendor directory and environment file to avoid overwriting dependencies and config
         if (strpos($destPath, '/vendor/') !== false || basename($destPath) === '.env.php') {
             continue;
@@ -224,6 +272,16 @@ if ($zip->open($tmpZip) === true) {
         rmdir($dir);
     }
         rrmdir($extractedDir);
+
+        // Record last update timestamp for footer display
+        try {
+            $dataDir = __DIR__ . '/data';
+            if (!is_dir($dataDir)) @mkdir($dataDir, 0755, true);
+            $lastFile = $dataDir . '/last_update.txt';
+            @file_put_contents($lastFile, date('c'));
+            @file_put_contents(__DIR__.'/update.log', '['.date('c').'] last_update.txt updated'.PHP_EOL, FILE_APPEND);
+        } catch (Exception $e) { /* non-fatal */ }
+
         respond_translated($labels, $lang, $labels[$lang]['success'] . $composerMsg);
 } else {
         respond_translated($labels, $lang, $labels[$lang]['zip_error'], false);

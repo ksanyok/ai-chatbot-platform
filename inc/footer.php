@@ -53,7 +53,21 @@ try {
             </span>
           <?php endif; ?>
         </p>
-        <p class="text-xs opacity-70"><?= htmlspecialchars(t('footer.updated')) ?> 28 июля 2025</p>
+        <p class="text-xs opacity-70"><?php
+            $lastUpdateFile = __DIR__ . '/../data/last_update.txt';
+            $lastUpdateHuman = '—';
+            if (file_exists($lastUpdateFile)) {
+                $iso = trim(@file_get_contents($lastUpdateFile));
+                if ($iso) {
+                    try {
+                        $dt = new DateTime($iso);
+                        $months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+                        $lastUpdateHuman = $dt->format('j') . ' ' . $months[(int)$dt->format('n') - 1] . ' ' . $dt->format('Y');
+                    } catch (Exception $e) { /* ignore and keep fallback */ }
+                }
+            }
+            echo htmlspecialchars(t('footer.updated')) . ' ' . htmlspecialchars($lastUpdateHuman);
+        ?></p>
       </div>
 
       <!-- Plugins promo -->
