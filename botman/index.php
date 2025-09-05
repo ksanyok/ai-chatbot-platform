@@ -2,7 +2,15 @@
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-require_once __DIR__ . '/../vendor/autoload.php';
+
+// Robust autoload: prefer project-root vendor (handles public/ docroot or chroot)
+$projectRootAutoload = dirname(__DIR__) . '/vendor/autoload.php';
+if (file_exists($projectRootAutoload)) {
+    @require_once $projectRootAutoload;
+    $autoloadFound = true;
+} else {
+    @require_once __DIR__ . '/../vendor/autoload.php';
+}
 
 use BotMan\BotMan\BotManFactory;
 use BotMan\BotMan\Drivers\DriverManager;
@@ -73,7 +81,8 @@ set_error_handler(function($severity, $message, $file, $line) use ($logFile) {
 DriverManager::loadDriver(\BotMan\Drivers\Telegram\TelegramDriver::class);
 if ($whatsappToken) {
     try {
-        DriverManager::loadDriver(\BotMan\Drivers\WhatsApp\WhatsAppDriver::class);
+        // Use string class name to avoid static analysis errors when driver package is absent
+        DriverManager::loadDriver('BotMan\\Drivers\\WhatsApp\\WhatsAppDriver');
     } catch (\Throwable $e) {
         // Либо драйвера нет, либо не установлен — логируем предупреждение, но не ломаем остальное
         file_put_contents($logFile, "[".date('c')."] WARNING: WhatsApp driver load failed: ".$e->getMessage()."\n", FILE_APPEND);
@@ -81,7 +90,7 @@ if ($whatsappToken) {
 }
 if ($instagramToken && $instagramAppSecret && $instagramVerificationToken) {
     try {
-        DriverManager::loadDriver(\BotMan\Drivers\Instagram\InstagramDriver::class);
+        DriverManager::loadDriver('BotMan\\Drivers\\Instagram\\InstagramDriver');
     } catch (\Throwable $e) {
         file_put_contents($logFile, "[".date('c')."] WARNING: Instagram driver load failed: ".$e->getMessage()."\n", FILE_APPEND);
     }

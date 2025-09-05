@@ -7,8 +7,14 @@ set_error_handler(function($severity, $message, $file, $line) use ($logFile) {
     return false;
 });
 
+// Robust autoload: prefer project-root vendor (handles public/ docroot or chroot)
+$projectRootAutoload = dirname(__DIR__) . '/vendor/autoload.php';
 try {
-    require_once __DIR__ . '/../vendor/autoload.php';
+    if (file_exists($projectRootAutoload)) {
+        @require_once $projectRootAutoload;
+    } else {
+        @require_once __DIR__ . '/../vendor/autoload.php';
+    }
 } catch (\Throwable $e) {
     file_put_contents($logFile, "[" . date('c') . "] Autoload error: " . $e->getMessage() . "\n", FILE_APPEND);
     echo "⚠️  Autoload error: " . $e->getMessage() . "\n";

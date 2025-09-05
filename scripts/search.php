@@ -1,5 +1,11 @@
 <?php
-require_once __DIR__ . '/../vendor/autoload.php';
+// Robust autoload: prefer project-root vendor (handles public/ docroot or chroot)
+$projectRootAutoload = dirname(__DIR__) . '/vendor/autoload.php';
+if (file_exists($projectRootAutoload)) {
+    @require_once $projectRootAutoload;
+} else {
+    @require_once __DIR__ . '/../vendor/autoload.php';
+}
 
 use OpenAI;
 

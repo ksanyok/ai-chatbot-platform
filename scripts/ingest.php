@@ -1,29 +1,40 @@
 <?php
-// Autoload dependencies from the nearest vendor directory (robust search)
-$tried = [];
-$pathsToTry = [];
-$base = __DIR__;
-// try climbing up to 6 levels from scripts/
-for ($i = 0; $i < 7; $i++) {
-    $pathsToTry[] = $base . str_repeat('/..', $i) . '/vendor/autoload.php';
-}
-// also try common locations relative to document root and realpath variants
-if (!empty($_SERVER['DOCUMENT_ROOT'])) {
-    $pathsToTry[] = rtrim(realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT'], '/') . '/vendor/autoload.php';
-}
-$pathsToTry[] = __DIR__ . '/../vendor/autoload.php';
-$pathsToTry[] = realpath(__DIR__ . '/../vendor/autoload.php');
-$autoloadFound = false;
-foreach ($pathsToTry as $p) {
-    if (!$p) continue;
-    $p = str_replace('/./', '/', $p);
-    $p = realpath($p) ?: $p;
-    $tried[] = $p;
-    if (file_exists($p)) {
-        @require_once $p;
-        $autoloadFound = true;
-        break;
+// Try project-root vendor first (handles common hosting layouts where public/ is docroot)
+$autoloadTried = [];
+$projectRootAutoload = dirname(__DIR__) . '/vendor/autoload.php';
+$projectRootAutoloadReal = realpath($projectRootAutoload) ?: $projectRootAutoload;
+$autoloadTried[] = $projectRootAutoloadReal;
+if (file_exists($projectRootAutoloadReal)) {
+    @require_once $projectRootAutoloadReal;
+    $autoloadFound = true;
+} else {
+    // continue with original robust search
+    $tried = [];
+    $pathsToTry = [];
+    $base = __DIR__;
+    // try climbing up to 6 levels from scripts/
+    for ($i = 0; $i < 7; $i++) {
+        $pathsToTry[] = $base . str_repeat('/..', $i) . '/vendor/autoload.php';
     }
+    // also try common locations relative to document root and realpath variants
+    if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+        $pathsToTry[] = rtrim(realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT'], '/') . '/vendor/autoload.php';
+    }
+    $pathsToTry[] = __DIR__ . '/../vendor/autoload.php';
+    $pathsToTry[] = realpath(__DIR__ . '/../vendor/autoload.php');
+    foreach ($pathsToTry as $p) {
+        if (!$p) continue;
+        $p = str_replace('/./', '/', $p);
+        $p = realpath($p) ?: $p;
+        $tried[] = $p;
+        if (file_exists($p)) {
+            @require_once $p;
+            $autoloadFound = true;
+            break;
+        }
+    }
+    // merge diagnostic lists
+    $tried = array_merge($autoloadTried, $tried);
 }
 // If required classes are still missing, fail gracefully depending on how the script is used.
 $depsOk = class_exists(\Dotenv\Dotenv::class) && class_exists(\voku\helper\HtmlDomParser::class);
@@ -558,7 +569,7 @@ function extractText($html)
 
     // Append normalized structured blocks so они попали в текст
     if ($blocks) {
-        $cleanHtml .= "\n\n" . implode("\n\n", $blocks);
+        $cleanHtml += "\n\n" + implode("\n\n", $blocks);
     }
 
     // 5) Convert to plain text
