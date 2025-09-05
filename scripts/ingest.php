@@ -45,11 +45,7 @@ if (!$depsOk) {
     // Log diagnostic note for administrators
     @file_put_contents(__DIR__ . '/../ingest.log', '[' . date('c') . '] deps_ok=false; autoload_found=' . ($autoloadFound ? '1' : '0') . '; tried=' . json_encode($tried) . "\n", FILE_APPEND);
     if ($isAjax) {
-        if (!headers_sent()) {
-            header('Content-Type: application/json; charset=utf-8', true, 500);
-        }
-        echo json_encode(['ok' => false, 'error' => 'Dependencies not found. Please run composer install on the server.']);
-        exit;
+        jsonResp(['ok' => false, 'error' => 'Dependencies not found. Please run composer install on the server.'], 200);
     } else {
         // When embedded in admin UI, render a visible, actionable warning instead of aborting with plain text
         $installUrl = (strpos($_SERVER['SCRIPT_NAME'], '/') === 0 ? '' : '') . '/install.php';
@@ -69,6 +65,13 @@ ob_start(); // Начинаем буферизацию вывода
 @ini_set('html_errors','0');
 
 require_once __DIR__ . '/../inc/auth.php'; // Предполагается, что db() здесь
+
+if (!function_exists('db')) {
+    logMsg('Fatal: db() is not defined after including auth.php');
+    if (!empty($_POST['ajax']) && $_POST['ajax'] === '1') {
+        jsonResp(['ok'=>false,'error'=>'Database bootstrap not loaded (db() missing). Check inc/auth.php include path.'], 200);
+    }
+}
 
 use OpenAI;
 use Dotenv\Dotenv;
@@ -111,132 +114,149 @@ set_error_handler(function ($severity, $message, $file, $line) {
 });
 /* ---------- AJAX API (preview/start) ---------- */
 if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
-    $pdo = db();
-    $action = isset($_POST['action']) ? $_POST['action'] : '';
-
-    if ($action === 'preview') {
-        $input = array_filter(array_map('trim', explode("\n", isset($_POST['urls']) ? $_POST['urls'] : '')));
-        $all   = [];
-        foreach ($input as $u) {
-            if ($u === '') continue;
-            if (preg_match('/sitemap.*\.xml$/i', $u)) {
-                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $all[] = (string)$n->loc; } } } catch (Exception $e) {}
-            } else { $all[] = $u; }
-        }
-        $all = array_values(array_unique($all));
-        $st  = $pdo->prepare("SELECT url,status,last_modified,last_trained_at FROM pages WHERE url=?");
-        $statuses = [];
-        foreach ($all as $url) {
-            $st->execute([$url]);
-            $row = $st->fetch(PDO::FETCH_ASSOC);
-            if (!$row) {
-                $statuses[$url] = 'new';
-            } elseif ($row['status'] === 'ready' && $row['last_modified'] <= $row['last_trained_at']) {
-                $statuses[$url] = 'ready';
-            } else {
-                $statuses[$url] = 'update';
-            }
-        }
-        $counts = ['new'=>0,'update'=>0,'ready'=>0];
-        $list = [];
-        foreach ($statuses as $u=>$s){ $counts[$s]++; $list[]=['url'=>$u,'status'=>$s]; }
-        jsonResp(['ok'=>true,'total'=>count($all),'counts'=>$counts,'list'=>$list]);
-    }
-
-    if ($action === 'start') {
-        $pages = array_filter(array_map('trim', explode("\n", isset($_POST['urls']) ? $_POST['urls'] : '')));
-        $excl  = array_filter(array_map('trim', explode("\n", isset($_POST['exclusions']) ? $_POST['exclusions'] : '')));
-        $mode  = isset($_POST['mode']) ? $_POST['mode'] : 'smart'; // smart | new_only | reprocess_all
-
-        // 1) Expand sitemaps
-        $expanded = [];
-        foreach ($pages as $u) {
-            if (preg_match('/sitemap.*\.xml$/i', $u)) {
-                try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $expanded[] = (string)$n->loc; } } } catch (Exception $e) {}
-            } else { $expanded[] = $u; }
-        }
-
-        // 2) Apply exclusions
-        $filtered = [];
-        foreach ($expanded as $u) {
-            $skip = false;
-            foreach ($excl as $ex) {
-                if ($ex === '') continue;
-                if ($ex[0] === '*' && substr($ex,-1) === '*') {
-                    $p = '/' . str_replace('\\*','.*', preg_quote($ex,'/')) . '/';
-                    if (preg_match($p, $u)) { $skip = true; break; }
-                } elseif (strpos($u, $ex) !== false) { $skip = true; break; }
-            }
-            if (!$skip) $filtered[] = $u;
-        }
-        if (!$filtered) jsonResp(['ok'=>false,'error'=>'No pages after filtering']);
-
-        // 3) Classify by status from DB (new / update / ready)
+    try {
         $pdo = db();
-        $st  = $pdo->prepare("SELECT status,last_modified,last_trained_at FROM pages WHERE url=?");
-        $classified = [];// [[url,status]]
-        $counts = ['new'=>0,'update'=>0,'ready'=>0];
-        foreach ($filtered as $url) {
-            $st->execute([$url]);
-            $row = $st->fetch(PDO::FETCH_ASSOC) ?: null;
-            if (!$row) { $s = 'new'; }
-            else if ((isset($row['status']) ? $row['status'] : '') === 'ready' && (isset($row['last_modified']) ? $row['last_modified'] : null) <= (isset($row['last_trained_at']) ? $row['last_trained_at'] : null)) { $s = 'ready'; }
-            else { $s = 'update'; }
-            $classified[] = ['url'=>$url,'status'=>$s];
-            $counts[$s]++;
+        $action = isset($_POST['action']) ? $_POST['action'] : '';
+
+        if ($action === 'health') {
+            jsonResp(['ok'=>true,'php'=>PHP_VERSION,'sapi'=>php_sapi_name()]);
         }
 
-        // 4) Decide which to train according to mode
-        $toTrain = [];
-        foreach ($classified as $it) {
-            if ($mode === 'new_only' && $it['status'] !== 'new') continue;
-            if ($mode === 'smart' && $it['status'] === 'ready') continue; // only new + update
-            $toTrain[] = $it['url'];
+        if ($action === 'preview') {
+            $input = array_filter(array_map('trim', explode("\n", isset($_POST['urls']) ? $_POST['urls'] : '')));
+            $all   = [];
+            foreach ($input as $u) {
+                if ($u === '') continue;
+                if (preg_match('/sitemap.*\.xml$/i', $u)) {
+                    try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $all[] = (string)$n->loc; } } } catch (Exception $e) {}
+                } else { $all[] = $u; }
+            }
+            $all = array_values(array_unique($all));
+            $st  = $pdo->prepare("SELECT url,status,last_modified,last_trained_at FROM pages WHERE url=?");
+            $statuses = [];
+            foreach ($all as $url) {
+                $st->execute([$url]);
+                $row = $st->fetch(PDO::FETCH_ASSOC);
+                if (!$row) {
+                    $statuses[$url] = 'new';
+                } elseif ($row['status'] === 'ready' && $row['last_modified'] <= $row['last_trained_at']) {
+                    $statuses[$url] = 'ready';
+                } else {
+                    $statuses[$url] = 'update';
+                }
+            }
+            $counts = ['new'=>0,'update'=>0,'ready'=>0];
+            $list = [];
+            foreach ($statuses as $u=>$s){ $counts[$s]++; $list[]=['url'=>$u,'status'=>$s]; }
+            jsonResp(['ok'=>true,'total'=>count($all),'counts'=>$counts,'list'=>$list]);
         }
-        if (!$toTrain) jsonResp(['ok'=>false,'error'=>'Nothing to process','counts'=>$counts]);
 
-        // 5) Persist queue
-        $pdo->beginTransaction();
-        $host = parse_url($toTrain[0], PHP_URL_HOST);
-        $sid = $pdo->prepare("SELECT id FROM sites WHERE url=?");
-        $sid->execute([$host]);
-        $siteId = $sid->fetchColumn();
-        if (!$siteId) { $pdo->prepare("INSERT INTO sites (url) VALUES (?)")->execute([$host]); $siteId = $pdo->lastInsertId(); }
+        if ($action === 'start') {
+            $pages = array_filter(array_map('trim', explode("\n", isset($_POST['urls']) ? $_POST['urls'] : '')));
+            $excl  = array_filter(array_map('trim', explode("\n", isset($_POST['exclusions']) ? $_POST['exclusions'] : '')));
+            $mode  = isset($_POST['mode']) ? $_POST['mode'] : 'smart'; // smart | new_only | reprocess_all
 
-        $insPage = $pdo->prepare("INSERT INTO pages (site_id,url,status) VALUES (?,?, 'pending') ON DUPLICATE KEY UPDATE status='pending'");
-        foreach ($toTrain as $u) { $insPage->execute([$siteId, $u]); }
+            // 1) Expand sitemaps
+            $expanded = [];
+            foreach ($pages as $u) {
+                if (preg_match('/sitemap.*\.xml$/i', $u)) {
+                    try { $sx = @simplexml_load_file($u); if ($sx) { foreach ($sx->url as $n) { $expanded[] = (string)$n->loc; } } } catch (Exception $e) {}
+                } else { $expanded[] = $u; }
+            }
 
-        $pdo->prepare("INSERT INTO trainings (site_id,total_pages,status) VALUES (?,?, 'running')")->execute([$siteId, count($toTrain)]);
-        $tid = (int)$pdo->lastInsertId();
-        $pdo->commit();
+            // 2) Apply exclusions
+            $filtered = [];
+            foreach ($expanded as $u) {
+                $skip = false;
+                foreach ($excl as $ex) {
+                    if ($ex === '') continue;
+                    if ($ex[0] === '*' && substr($ex,-1) === '*') {
+                        $p = '/' . str_replace('\\*','.*', preg_quote($ex,'/')) . '/';
+                        if (preg_match($p, $u)) { $skip = true; break; }
+                    } elseif (strpos($u, $ex) !== false) { $skip = true; break; }
+                }
+                if (!$skip) $filtered[] = $u;
+            }
+            if (!$filtered) jsonResp(['ok'=>false,'error'=>'No pages after filtering']);
 
-        // 6) Launch worker (multi-strategy)
-        $spawn = triggerBackground($tid);
-        jsonResp(['ok'=>true,'tid'=>$tid,'counts'=>$counts,'selected'=>count($toTrain),'mode'=>$mode,'spawn'=>$spawn]);
+            // 3) Classify by status from DB (new / update / ready)
+            $pdo = db();
+            $st  = $pdo->prepare("SELECT status,last_modified,last_trained_at FROM pages WHERE url=?");
+            $classified = [];// [[url,status]]
+            $counts = ['new'=>0,'update'=>0,'ready'=>0];
+            foreach ($filtered as $url) {
+                $st->execute([$url]);
+                $row = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+                if (!$row) { $s = 'new'; }
+                else if ((isset($row['status']) ? $row['status'] : '') === 'ready' && (isset($row['last_modified']) ? $row['last_modified'] : null) <= (isset($row['last_trained_at']) ? $row['last_trained_at'] : null)) { $s = 'ready'; }
+                else { $s = 'update'; }
+                $classified[] = ['url'=>$url,'status'=>$s];
+                $counts[$s]++;
+            }
+
+            // 4) Decide which to train according to mode
+            $toTrain = [];
+            foreach ($classified as $it) {
+                if ($mode === 'new_only' && $it['status'] !== 'new') continue;
+                if ($mode === 'smart' && $it['status'] === 'ready') continue; // only new + update
+                $toTrain[] = $it['url'];
+            }
+            if (!$toTrain) jsonResp(['ok'=>false,'error'=>'Nothing to process','counts'=>$counts]);
+
+            // 5) Persist queue
+            $pdo->beginTransaction();
+            $host = parse_url($toTrain[0], PHP_URL_HOST);
+            $sid = $pdo->prepare("SELECT id FROM sites WHERE url=?");
+            $sid->execute([$host]);
+            $siteId = $sid->fetchColumn();
+            if (!$siteId) { $pdo->prepare("INSERT INTO sites (url) VALUES (?)")->execute([$host]); $siteId = $pdo->lastInsertId(); }
+
+            $insPage = $pdo->prepare("INSERT INTO pages (site_id,url,status) VALUES (?,?, 'pending') ON DUPLICATE KEY UPDATE status='pending'");
+            foreach ($toTrain as $u) { $insPage->execute([$siteId, $u]); }
+
+            $pdo->prepare("INSERT INTO trainings (site_id,total_pages,status) VALUES (?,?, 'running')")->execute([$siteId, count($toTrain)]);
+            $tid = (int)$pdo->lastInsertId();
+            $pdo->commit();
+
+            // 6) Launch worker (multi-strategy)
+            $spawn = triggerBackground($tid);
+            jsonResp(['ok'=>true,'tid'=>$tid,'counts'=>$counts,'selected'=>count($toTrain),'mode'=>$mode,'spawn'=>$spawn]);
+        }
+
+        if ($action === 'stats') {
+            $rows = $pdo->query("SELECT s.url,
+                                        COUNT(t.id) AS trainings,
+                                        COALESCE(SUM(t.total_pages),0) AS total_pages,
+                                        COALESCE(SUM(t.processed_pages),0) AS processed,
+                                        MAX(t.finished_at) AS last_trained
+                                   FROM sites s
+                                   LEFT JOIN trainings t ON t.site_id = s.id
+                                  GROUP BY s.id, s.url
+                                  ORDER BY (last_trained IS NULL), last_trained DESC, s.url ASC")
+                         ->fetchAll(PDO::FETCH_ASSOC);
+            jsonResp(['ok'=>true,'rows'=>$rows]);
+        }
+
+        if ($action === 'summary') {
+            $sites = (int)$pdo->query("SELECT COUNT(*) FROM sites")->fetchColumn();
+            $trained = (int)$pdo->query("SELECT COUNT(*) FROM pages WHERE status='ready'")->fetchColumn();
+            $running = (int)$pdo->query("SELECT COUNT(*) FROM trainings WHERE status='running'")->fetchColumn();
+            jsonResp(['ok'=>true,'sites'=>$sites,'trained'=>$trained,'running'=>$running]);
+        }
+
+        jsonResp(['ok'=>false,'error'=>'Unknown action']);
+    } catch (Throwable $e) {
+        logMsg('AJAX error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8', true, 200);
+        }
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Server exception',
+            'hint' => 'Check ingest.log on the server for details',
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
     }
-
-    if ($action === 'stats') {
-        $rows = $pdo->query("SELECT s.url,
-                                    COUNT(t.id) AS trainings,
-                                    COALESCE(SUM(t.total_pages),0) AS total_pages,
-                                    COALESCE(SUM(t.processed_pages),0) AS processed,
-                                    MAX(t.finished_at) AS last_trained
-                               FROM sites s
-                               LEFT JOIN trainings t ON t.site_id = s.id
-                              GROUP BY s.id, s.url
-                              ORDER BY (last_trained IS NULL), last_trained DESC, s.url ASC")
-                     ->fetchAll(PDO::FETCH_ASSOC);
-        jsonResp(['ok'=>true,'rows'=>$rows]);
-    }
-
-    if ($action === 'summary') {
-        $sites = (int)$pdo->query("SELECT COUNT(*) FROM sites")->fetchColumn();
-        $trained = (int)$pdo->query("SELECT COUNT(*) FROM pages WHERE status='ready'")->fetchColumn();
-        $running = (int)$pdo->query("SELECT COUNT(*) FROM trainings WHERE status='running'")->fetchColumn();
-        jsonResp(['ok'=>true,'sites'=>$sites,'trained'=>$trained,'running'=>$running]);
-    }
-
-    jsonResp(['ok'=>false,'error'=>'Unknown action']);
 }
 
 
@@ -596,10 +616,12 @@ function tokenCount($text)
 }
 
 /* ---------- COMMON ---------- */
-function jsonResp($payload)
+function jsonResp($payload, $httpCode = 200)
 {
     while (ob_get_level() > 0) { @ob_end_clean(); }
-    header('Content-Type: application/json; charset=utf-8');
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8', true, $httpCode);
+    }
     echo json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
