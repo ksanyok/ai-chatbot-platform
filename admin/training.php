@@ -85,7 +85,7 @@ $cost = isset($running['cost']) ? $running['cost'] : 0;
   }
 
   function start(){
-    const mode = (document.querySelector('input[name="procMode]:checked')||{value:'smart'}).value;
+    const mode = (document.querySelector('input[name="procMode"]:checked')||{value:'smart'}).value;
     progWrap && progWrap.classList.remove('hidden');
     fetch(ENDPOINT, {method:'POST', body: fd({ajax:'1', action:'start', urls: elUrls.value, exclusions: elExcl.value, mode})})
       .then(r=>r.text()).then(txt=>{ let d; try{ d=JSON.parse(txt); } catch(e){ console.error('Start JSON parse failed:', txt); alert('Server returned invalid response when starting training. See console for details.'); return; } if(d&&d.ok&&d.tid){ poll(d.tid); refreshStats(); } });

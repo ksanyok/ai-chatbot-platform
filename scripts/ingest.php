@@ -37,7 +37,9 @@ if (file_exists($projectRootAutoloadReal)) {
     $tried = array_merge($autoloadTried, $tried);
 }
 // If required classes are still missing, fail gracefully depending on how the script is used.
-$depsOk = class_exists(\Dotenv\Dotenv::class) && class_exists(\voku\helper\HtmlDomParser::class);
+// Check if .env exists, and adjust dependency check accordingly
+$envFileExists = file_exists(__DIR__ . '/../.env');
+$depsOk = class_exists(\Dotenv\Dotenv::class) || !$envFileExists; // HtmlDomParser is optional (we can fallback to DOMDocument)
 if (!$depsOk) {
     $isAjax = (isset($_POST['ajax']) && $_POST['ajax'] === '1') || isset($_GET['run']) || isset($_GET['progress']);
     // Log diagnostic note for administrators
@@ -56,7 +58,7 @@ if (!$depsOk) {
         if ($basePath === '') $basePath = '/';
         $link = htmlspecialchars($basePath . '/install.php');
         echo '<div class="rounded-lg p-4 bg-red-700 text-white">';
-        echo '<strong>Dependencies missing.</strong> Composer autoloader not found.\n';
+        echo '<strong>Dependencies missing.</strong> Composer autoloader not found.<br>';
         echo 'Run <code>composer install</code> in the project root on your server, or open <a class="underline text-white/90" href="' . $link . '">install.php</a> to attempt installation from the web interface.';
         echo '</div>';
         return; // stop processing further when included
@@ -569,7 +571,7 @@ function extractText($html)
 
     // Append normalized structured blocks so они попали в текст
     if ($blocks) {
-        $cleanHtml += "\n\n" + implode("\n\n", $blocks);
+        $cleanHtml .= "\n\n" . implode("\n\n", $blocks);
     }
 
     // 5) Convert to plain text
@@ -1072,8 +1074,10 @@ if (isset($_GET['retrain_site'])) {
     $siteId = (int)$_GET['retrain_site'];
     $pdo = db();
     $pdo->prepare("UPDATE pages SET status='pending' WHERE site_id=?")->execute([$siteId]);
-    // Create new training for this site
-    $count = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?")->execute([$siteId]) ? $pdo->query("SELECT COUNT(*)")->fetchColumn() : 0;
+    // Create new training for this site with proper page count
+    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM pages WHERE site_id=?");
+    $cntStmt->execute([$siteId]);
+    $count = (int)$cntStmt->fetchColumn();
     $pdo->prepare("INSERT INTO trainings (site_id, total_pages, status) VALUES (?, ?, 'running')")
         ->execute([$siteId, $count]);
     header("Location: ?stats=1");
