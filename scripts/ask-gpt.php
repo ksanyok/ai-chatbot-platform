@@ -302,6 +302,32 @@ try {
 
 $finalAnswer = isset($response['choices'][0]['message']['content']) ? $response['choices'][0]['message']['content'] : "⚠️ Ошибка: пустой ответ";
 
+/**
+ * Defensive: strip greeting from model output when greeting is NOT eligible now.
+ * Covers cases when upstream template/agent всё же добавил приветствие.
+ */
+if ((!$shouldGreet || !$greetEligible) && !empty($botGreeting)) {
+    $greetText = trim((string)$botGreeting);
+    // Remove exact match at the beginning
+    $finalAnswer = ltrim($finalAnswer);
+    if (stripos($finalAnswer, $greetText) === 0) {
+        $finalAnswer = ltrim(substr($finalAnswer, strlen($greetText)));
+        // Also remove leading punctuation/line breaks left from template
+        $finalAnswer = preg_replace('/^\s*(?:[–—-]\s*)?/u', '', $finalAnswer);
+        file_put_contents($logFile, "[" . date('c') . "] Greeting stripped from model output\n", FILE_APPEND);
+    }
+    // Additionally, drop a standalone first line if it equals greeting ignoring emoji wrappers
+    $lines = preg_split('/\R/u', $finalAnswer);
+    if ($lines && isset($lines[0])) {
+        $first = trim(preg_replace('/^[\x{1F300}-\x{1FAFF}]\s*/u', '', $lines[0])); // remove leading emoji
+        if (mb_stripos($first, $greetText) === 0) {
+            array_shift($lines);
+            $finalAnswer = ltrim(implode("\n", $lines));
+            file_put_contents($logFile, "[" . date('c') . "] Greeting first-line removed from model output\n", FILE_APPEND);
+        }
+    }
+}
+
 $greetText = trim((string)$botGreeting);
 if ($userId && $shouldGreet && $greetEligible && $greetText !== '') {
     // Skip if assistant already starts with the same greeting (defensive)
