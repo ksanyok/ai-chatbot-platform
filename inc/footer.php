@@ -54,19 +54,26 @@ try {
           <?php endif; ?>
         </p>
         <p class="text-xs opacity-70"><?php
-            $lastUpdateFile = __DIR__ . '/../data/last_update.txt';
-            $lastUpdateHuman = '—';
-            if (file_exists($lastUpdateFile)) {
-                $iso = trim(@file_get_contents($lastUpdateFile));
+            // Display last update date from data/last_update.txt (ISO timestamp). Fall back to em dash if unavailable.
+            if (session_status() === PHP_SESSION_NONE) { @session_start(); }
+            $ui_lang = $_SESSION['ui_lang'] ?? 'ru';
+            $lastDisplay = '—';
+            $lastFile = __DIR__ . '/../data/last_update.txt';
+            if (file_exists($lastFile)) {
+                $iso = trim(@file_get_contents($lastFile));
                 if ($iso) {
                     try {
                         $dt = new DateTime($iso);
-                        $months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
-                        $lastUpdateHuman = $dt->format('j') . ' ' . $months[(int)$dt->format('n') - 1] . ' ' . $dt->format('Y');
-                    } catch (Exception $e) { /* ignore and keep fallback */ }
+                        if ($ui_lang === 'ru') {
+                            $months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+                            $lastDisplay = $dt->format('j') . ' ' . $months[(int)$dt->format('n') - 1] . ' ' . $dt->format('Y');
+                        } else {
+                            $lastDisplay = $dt->format('F j, Y');
+                        }
+                    } catch (Exception $e) { /* ignore */ }
                 }
             }
-            echo htmlspecialchars(t('footer.updated')) . ' ' . htmlspecialchars($lastUpdateHuman);
+            echo htmlspecialchars(t('footer.updated')) . ' ' . htmlspecialchars($lastDisplay);
         ?></p>
       </div>
 

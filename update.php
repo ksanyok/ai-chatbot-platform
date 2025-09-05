@@ -53,9 +53,9 @@ function respond_translated(array $labels, string $lang, string $message, bool $
     $title   = htmlspecialchars($labels[$lang]['title']);
     $heading = htmlspecialchars($labels[$lang]['heading']);
     $return  = htmlspecialchars($labels[$lang]['return']);
-    $msg     = $message; // allow some HTML/newlines in message; we'll escape when placing into text nodes
+    $msgText = strip_tags($message);
 
-    // Try to determine local app version and last update timestamp
+    // Determine local app version and last update timestamp
     $localVer = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
     $lastUpdateHuman = '—';
     $lastFile = __DIR__ . '/data/last_update.txt';
@@ -74,39 +74,52 @@ function respond_translated(array $labels, string $lang, string $message, bool $
         }
     }
 
-    echo '<!DOCTYPE html><html lang="' . htmlspecialchars($lang) . '"><head><meta charset="UTF-8">';
+    echo '<!doctype html><html lang="' . htmlspecialchars($lang) . '"><head><meta charset="utf-8">';
     echo '<meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . $title . '</title>';
-    echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css">';
-    echo '</head><body class="bg-slate-900 text-slate-100">';
-    echo '<div class="min-h-screen flex items-center justify-center p-6">';
-    echo '<div class="max-w-2xl w-full">';
-    echo '<div class="rounded-2xl bg-gradient-to-br from-slate-800/60 to-slate-900/70 border border-white/6 p-6 shadow-xl">';
-    echo '<div class="flex items-center gap-4">';
-    echo '<div class="w-12 h-12 rounded-xl bg-emerald-500/20 grid place-items-center text-emerald-300 font-bold">BRS</div>';
-    echo '<div>';
-    echo '<h1 class="text-xl font-semibold">' . $heading . '</h1>';
-    echo '<p class="text-sm text-slate-300">' . htmlspecialchars($title) . '</p>';
-    echo '</div></div>';
+    // Use same Tailwind + Inter setup as login/install pages for consistent look
+    echo '<script src="https://cdn.tailwindcss.com"></script>';
+    echo '<script>tailwind.config = { theme: { extend: { fontFamily: { sans: [\'Inter\',\'ui-sans-serif\',\'system-ui\',\'Segoe UI\',\'Roboto\',\'Helvetica Neue\',\'Arial\',\'Noto Sans\'] } } } };</script>';
+    echo '<link rel="preconnect" href="https://fonts.googleapis.com">';
+    echo '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>';
+    echo '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">';
+    echo '<style>.glass{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);box-shadow:0 10px 30px rgba(0,0,0,.45)}</style>';
+    echo '</head><body class="min-h-screen text-gray-100 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 font-sans">';
 
-    echo '<div class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">';
-    echo '<div class="col-span-2">';
-    echo '<div class="p-4 rounded bg-slate-800/60 border border-white/4">';
-    echo '<p class="text-sm text-slate-300 mb-2">' . htmlspecialchars(strip_tags($msg)) . '</p>';
-    echo '</div></div>';
-    echo '<div class="p-4 rounded bg-slate-800/40 border border-white/4">';
-    echo '<div class="text-xs text-slate-400">' . htmlspecialchars($labels[$lang]['title']) . '</div>';
-    echo '<div class="mt-2 text-sm">v' . htmlspecialchars($localVer) . '</div>';
-    echo '<div class="mt-3 text-xs text-slate-400">' . htmlspecialchars($labels[$lang]['return']) . '</div>';
-    echo '<div class="mt-2 text-sm">' . htmlspecialchars($lastUpdateHuman) . '</div>';
-    echo '</div></div>';
+    echo '<div class="min-h-screen grid md:grid-cols-2">';
+    // Left promo similar to login
+    echo '<section class="hidden md:flex relative items-center justify-center p-12 overflow-hidden">';
+    echo '<div class="absolute -top-20 -left-20 h-96 w-96 rounded-full bg-indigo-600/30 blur-3xl"></div>';
+    echo '<div class="absolute -bottom-24 -right-24 h-[28rem] w-[28rem] rounded-full bg-purple-600/20 blur-3xl"></div>';
+    echo '<div class="relative z-10 max-w-md">';
+    echo '<div class="flex items-center space-x-3 mb-4">';
+    echo '<div class="h-12 w-12 rounded-xl bg-white/10 flex items-center justify-center"><span class="text-2xl">🤖</span></div>';
+    echo '<h1 class="text-3xl font-bold">BuyReadySite Updater</h1>';
+    echo '</div>';
+    echo '<p class="text-slate-300 text-lg leading-relaxed">' . htmlspecialchars($labels[$lang]['success']) . ' ' . htmlspecialchars($labels[$lang]['title']) . '</p>';
+    echo '</div></section>';
 
-    echo '<div class="mt-6 flex items-center justify-between">';
+    // Right card — glass panel showing update result
+    echo '<section class="flex items-center justify-center p-6 md:p-12">';
+    echo '<div class="glass rounded-2xl p-8 w-full max-w-md">';
+    echo '<div class="flex items-center justify-between mb-6">';
+    echo '<div><h2 class="text-2xl font-bold">' . $heading . '</h2><p class="text-sm text-slate-300 mt-1">' . $title . '</p></div>';
+    echo '<div class="text-xs text-slate-400">v' . htmlspecialchars($localVer) . '</div>';
+    echo '</div>';
+
+    // Message block
+    echo '<div class="p-4 rounded bg-slate-800/60 border border-white/6 mb-4">';
+    echo '<p class="text-sm text-slate-300">' . htmlspecialchars($msgText) . '</p>';
+    echo '</div>';
+
+    echo '<div class="text-xs text-slate-400 mb-4">Last update: <span class="text-sm text-slate-200">' . htmlspecialchars($lastUpdateHuman) . '</span></div>';
+
+    echo '<div class="flex items-center justify-between">';
     echo '<a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-200 border border-emerald-400/10 hover:bg-emerald-500/30">' . $return . '</a>';
     echo '<a href="/update.log" class="text-xs text-slate-400 hover:underline">View update.log</a>';
     echo '</div>';
 
-    echo '</div></div></div></body></html>';
+    echo '</div></section></div></body></html>';
     exit;
 }
 
