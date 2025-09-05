@@ -39,6 +39,11 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS history (
 try { $pdo->exec("ALTER TABLE history ADD COLUMN channel VARCHAR(32) NULL"); } catch (Throwable $e) {}
 try { $pdo->exec("CREATE INDEX idx_history_created ON history(created_at)"); } catch (Throwable $e) {}
 try { $pdo->exec("CREATE INDEX idx_history_channel_time ON history(channel, created_at)"); } catch (Throwable $e) {}
+// Ensure user_greeting table exists (for greeting throttle)
+$pdo->exec("CREATE TABLE IF NOT EXISTS user_greeting (
+    user_id VARCHAR(191) PRIMARY KEY,
+    last_greeted_at DATETIME NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
 // Load Telegram bot token from DB
 $telegramToken = $pdo->query("SELECT value FROM api_keys WHERE name='telegram_bot_token'")->fetchColumn();
@@ -130,6 +135,34 @@ if ($instagramToken && $instagramAppSecret && $instagramVerificationToken) {
 try {
     $botman = BotManFactory::create($config);
 
+    // Helper for greeting throttle
+    function tgShouldGreetAndTouch(PDO $pdo, string $userId): bool {
+        try {
+            $pdo->beginTransaction();
+            $sel = $pdo->prepare("SELECT last_greeted_at FROM user_greeting WHERE user_id=? FOR UPDATE");
+            $sel->execute([$userId]);
+            $row = $sel->fetch(PDO::FETCH_ASSOC);
+            $now = time();
+            $eligible = false;
+            if ($row && !empty($row['last_greeted_at'])) {
+                $lg = strtotime($row['last_greeted_at']);
+                $eligible = ($now - $lg) >= 24*3600;
+            } else {
+                $eligible = true; // first time
+            }
+            if ($eligible) {
+                $up = $pdo->prepare("INSERT INTO user_greeting (user_id,last_greeted_at) VALUES (?, NOW())
+                                     ON DUPLICATE KEY UPDATE last_greeted_at=VALUES(last_greeted_at)");
+                $up->execute([$userId]);
+            }
+            $pdo->commit();
+            return $eligible;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            return false; // fail-closed: лучше не слать приветствие
+        }
+    }
+
     // Обработка входящего текста и автоответ на комментарии Facebook
     $botman->hears('.*', function ($bot) use ($pdo, $telegramToken, $reactionEnabled, $facebookReactionEnabled, $facebookToken, $logFile, $commentTriggerEnabled, $commentTriggerMessage) {
         $payload = $bot->getMessage()->getPayload();
@@ -211,33 +244,22 @@ try {
             return;
         }
         if ($question === '/start') {
-            $startGreeting = $greeting ?: 'Привет! Я готов отвечать на вопросы 🤖';
-            $bot->reply($startGreeting);
-            // Записываем факт приветствия, чтобы не повторяться
-            try {
-                $stmt = $pdo->prepare("INSERT INTO history (user_id, question, answer, channel, created_at) VALUES (?, ?, ?, ?, NOW())");
-                $stmt->execute([$senderId, '/start', $startGreeting, $channelName]);
-            } catch (\Throwable $e) {
-                file_put_contents($logFile, "[".date('c')."] history insert error: ".$e->getMessage()."\n", FILE_APPEND);
+            $greetEligible = false;
+            if ($greeting && trim($greeting) !== '') {
+                $greetEligible = tgShouldGreetAndTouch($pdo, (string)$senderId);
             }
+            if ($greeting && trim($greeting) !== '' && $greetEligible) {
+                $bot->reply($greeting);
+                try {
+                    $stmt = $pdo->prepare("INSERT INTO history (user_id, question, answer, channel, created_at) VALUES (?, ?, ?, ?, NOW())");
+                    $stmt->execute([$senderId, '/start', $greeting, $channelName]);
+                } catch (\Throwable $e) {
+                    file_put_contents($logFile, "[".date('c')."] history insert error: ".$e->getMessage()."\n", FILE_APPEND);
+                }
+            }
+            file_put_contents($logFile, "[".date('c')."] start: greeting ".(($greeting && trim($greeting)!=='')?'configured':'empty')."; eligible=".($greetEligible?'yes':'no')."\n", FILE_APPEND);
+            // даже если не было приветствия (еще не прошло 24ч или пусто) — просто выходим
             return;
-        }
-
-        // Check user history count
-        $historyCount = $pdo->prepare("SELECT COUNT(*) FROM history WHERE user_id = ?");
-        $historyCount->execute([$senderId]);
-        $count = $historyCount->fetchColumn();
-
-        if ($count == 0 && $greeting && trim($greeting) !== '') {
-            $bot->reply($greeting);
-            // продолжаем генерировать ответ на первый вопрос
-            // Record that the bot greeted the user so the LLM won't repeat the greeting
-            try {
-                $stmt = $pdo->prepare("INSERT INTO history (user_id, question, answer, channel, created_at) VALUES (?, ?, ?, ?, NOW())");
-                $stmt->execute([$senderId, '/greeting', $greeting, $channelName]);
-            } catch (\Throwable $e) {
-                file_put_contents($logFile, "[".date('c')."] history insert error (greeting): ".$e->getMessage()."\n", FILE_APPEND);
-            }
         }
 
         if ($reactionEnabled == '1' && $driverName === 'Telegram') {

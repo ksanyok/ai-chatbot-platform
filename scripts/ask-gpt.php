@@ -328,17 +328,7 @@ if ((!$shouldGreet || !$greetEligible) && !empty($botGreeting)) {
     }
 }
 
-$greetText = trim((string)$botGreeting);
-if ($userId && $shouldGreet && $greetEligible && $greetText !== '') {
-    // Skip if assistant already starts with the same greeting (defensive)
-    $startsWithGreet = stripos(ltrim($finalAnswer), $greetText) === 0;
-    if (!$startsWithGreet) {
-        $finalAnswer = $greetText . "\n\n" . ltrim($finalAnswer);
-        file_put_contents($logFile, "[" . date('c') . "] Greeting injected (lastInteractionAt=" . ($lastInteractionAt ?: 'null') . "; DB=ok)\n", FILE_APPEND);
-    } else {
-        file_put_contents($logFile, "[" . date('c') . "] Greeting skipped (already present in model output)\n", FILE_APPEND);
-    }
-}
+/* Greeting injection is disabled here. Telegram layer is responsible for greetings. */
 echo $finalAnswer;
 file_put_contents($logFile, "[" . date('c') . "] Ответ:\n$finalAnswer\n", FILE_APPEND);
 
