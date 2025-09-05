@@ -139,7 +139,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
                 $row = $st->fetch(PDO::FETCH_ASSOC);
                 if (!$row) {
                     $statuses[$url] = 'new';
-                } elseif ($row['status'] === 'ready' && $row['last_modified'] <= $row['last_trained_at']) {
+                } elseif (!empty($row['status']) && $row['status'] === 'ready' && !empty($row['last_modified']) && !empty($row['last_trained_at']) && $row['last_modified'] <= $row['last_trained_at']) {
                     $statuses[$url] = 'ready';
                 } else {
                     $statuses[$url] = 'update';
@@ -224,16 +224,31 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
         }
 
         if ($action === 'stats') {
-            $rows = $pdo->query("SELECT s.url,
-                                        COUNT(t.id) AS trainings,
-                                        COALESCE(SUM(t.total_pages),0) AS total_pages,
-                                        COALESCE(SUM(t.processed_pages),0) AS processed,
-                                        MAX(t.finished_at) AS last_trained
-                                   FROM sites s
-                                   LEFT JOIN trainings t ON t.site_id = s.id
-                                  GROUP BY s.id, s.url
-                                  ORDER BY (last_trained IS NULL), last_trained DESC, s.url ASC")
-                         ->fetchAll(PDO::FETCH_ASSOC);
+            // Resilient stats: handle trainings.finished_at possibly missing on legacy DBs
+            try {
+                $rows = $pdo->query("SELECT s.url,
+                                            COUNT(t.id) AS trainings,
+                                            COALESCE(SUM(t.total_pages),0) AS total_pages,
+                                            COALESCE(SUM(t.processed_pages),0) AS processed,
+                                            MAX(t.finished_at) AS last_trained
+                                       FROM sites s
+                                       LEFT JOIN trainings t ON t.site_id = s.id
+                                      GROUP BY s.id, s.url
+                                      ORDER BY (last_trained IS NULL), last_trained DESC, s.url ASC")
+                             ->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Throwable $e) {
+                // Fallback without finished_at
+                $rows = $pdo->query("SELECT s.url,
+                                            COUNT(t.id) AS trainings,
+                                            COALESCE(SUM(t.total_pages),0) AS total_pages,
+                                            COALESCE(SUM(t.processed_pages),0) AS processed,
+                                            MAX(t.updated_at) AS last_trained
+                                       FROM sites s
+                                       LEFT JOIN trainings t ON t.site_id = s.id
+                                      GROUP BY s.id, s.url
+                                      ORDER BY (last_trained IS NULL), last_trained DESC, s.url ASC")
+                             ->fetchAll(PDO::FETCH_ASSOC);
+            }
             jsonResp(['ok'=>true,'rows'=>$rows]);
         }
 
@@ -865,7 +880,7 @@ if (isset($_POST['urls'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ссылки для обучения</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center px-4">
@@ -977,7 +992,7 @@ if (isset($_POST['start_ingest'], $_POST['pages'], $_POST['exclusions'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Обучение запущено</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script>
         const tid = <?php echo $tid; ?>;
@@ -1040,7 +1055,7 @@ if (isset($_GET['stats'])) {
                           FROM sites s LEFT JOIN trainings t ON t.site_id=s.id
                           GROUP BY s.id, s.url ORDER BY s.url")->fetchAll(PDO::FETCH_ASSOC);
     ?><!doctype html><html><head>
-      <meta charset="utf-8"><script src="https://cdn.tailwindcss.com"></script>
+      <meta charset="utf-8"><link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
       <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
       <title><?= htmlspecialchars(t('stats.title')) ?></title></head>
     <body class="min-h-screen bg-gradient-to-br from-gray-900 via-indigo-950 to-gray-900 text-gray-100 p-6">

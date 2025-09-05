@@ -206,6 +206,13 @@ function ensureTables(PDO $db): void
         UNIQUE KEY unique_page (site_id, url)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+    // Add missing operational columns to pages table for training state and timestamps
+    try { $db->exec("ALTER TABLE pages ADD COLUMN status VARCHAR(20) DEFAULT 'pending'"); } catch (Throwable $e) {}
+    try { $db->exec("ALTER TABLE pages ADD COLUMN last_modified DATETIME NULL"); } catch (Throwable $e) {}
+    try { $db->exec("ALTER TABLE pages ADD COLUMN last_trained_at DATETIME NULL"); } catch (Throwable $e) {}
+    try { $db->exec("ALTER TABLE pages ADD INDEX idx_pages_status (status)"); } catch (Throwable $e) {}
+    try { $db->exec("ALTER TABLE pages ADD INDEX idx_pages_last_trained (last_trained_at)"); } catch (Throwable $e) {}
+
     // Create trainings table
     $db->exec("CREATE TABLE IF NOT EXISTS trainings (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -244,6 +251,8 @@ function ensureTables(PDO $db): void
     } catch (Throwable $e) {
         // Column may already exist
     }
+    // Ensure finished_at exists (used in ingest.php stats)
+    try { $db->exec("ALTER TABLE trainings ADD COLUMN finished_at DATETIME NULL"); } catch (Throwable $e) {}
 
     // Create history table
     $db->exec("CREATE TABLE IF NOT EXISTS history (
